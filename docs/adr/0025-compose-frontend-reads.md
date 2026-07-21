@@ -1,0 +1,3 @@
+# 前端批量组合职责单一的查询
+
+Burn 不提供包含轮次、余额、治理、行动和累计数据的万能账户状态 view。轮次开放状态由 `isRoundOpen(round)` 返回，社区系数由 `scoreMultiplier(token, round)` 返回，治理和行动额度分别由 `govRewardBurnState(account, token, round)` 与 `actionRewardBurnStates(account, token, round)` 返回，已发生的数量和得分由 `accountRoundBurnStats` 与 `accountBurnStats` 返回。社区代币、SL、ST 的钱包余额和对 Burn 的 allowance 直接读取标准 ERC20，不由 Burn 代理。前端以选中的 `round` 为统一参数，通过现有批量读取能力组合这些调用；行动数组可以按需加载，并允许单项失败而不阻塞 SL、ST 和治理区域。命名统一使用 `State` 表示当前轮操作状态、`Stats` 表示已发生累计、`Share` 表示空投份额，不再使用含义宽泛的 `Info` 或聚合 `Status`。

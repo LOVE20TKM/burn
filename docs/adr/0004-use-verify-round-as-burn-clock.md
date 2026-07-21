@@ -1,0 +1,3 @@
+# 使用奖励轮次作为销毁时钟
+
+Burn 的轮次编号与 LOVE20Mint 的奖励轮次相同，因此代码中的单轮参数统一命名为 `round`。构造函数使用 `startRound` 和大于零的 `roundCount` 定义销毁周期，并派生 `endRound = startRound + roundCount - 1`；三者均为 `public immutable`。当 `LOVE20Verify.currentRound() > 0` 且 `round == LOVE20Verify.currentRound() - 1` 时，仅该轮开放销毁，旧轮次立即失效；这种实现顺序也避免任意查询参数执行 `round + 1` 时溢出。`Verify.currentRound() == endRound + 1` 是最后一个销毁开放窗口，Verify 再推进一次至 `endRound + 2` 时，统一份额查询的 `finalized` 变为 `true`。部署时 `startRound` 不得早于 Verify 当前轮次；实际准备时长由部署者根据部署区块、验收和发布时间决定，不承诺完整的 Verify 轮次。所有按轮次查询和全部写入口都显式接收 `round`，避免隐藏当前轮次以及跨轮延迟交易按新轮次执行；配置、全周期累计和份额查询不带轮次。未采用 Stake、Vote 或 Burn 自定义轮次，因为 LOVE20Mint 本身依据 Verify 轮次判断奖励是否已经可以铸造。
