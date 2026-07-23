@@ -1,8 +1,8 @@
-# LOVE20 生态销毁获 BSC 空投份额合约设计
+# LOVE20 生态资产销毁与份额合约设计
 
 状态：已确认，待实现。
 
-本合约以下简称 `Burn`。它在 TKM 链将 LOVE20 生态的 SL/ST 凭证永久锁定到对应社区代币合约、真实销毁治理与行动激励代币，并计算各地址获得 BSC 空投池的份额。Burn 不跨链、不持有 BSC 资产，也不计算具体空投代币数量。
+本合约以下简称 `Burn`。部署时指定一个 LOVE20 范围代币，其自身社区和已经完成发射的直接子币社区可以永久锁定 SL/ST 凭证、真实销毁治理与行动激励所铸造代币，并按销毁得分竞争份额。Burn 始终提供份额；可选指定另一种 ERC20 作为空投代币，并由参与地址直接领取。
 
 领域术语以 [CONTEXT.md](../CONTEXT.md) 为准，关键取舍见 [ADR](./adr/)。
 
@@ -10,26 +10,36 @@
 
 Burn 必须做到：
 
-- LOVE20 根币及部署时已经完成发射的直接子币可以参与。
+- 部署时显式配置的范围代币社区及其已经完成发射的直接子币社区可以参与。
 - 四类资产分别竞争份额，并在无人参与时重新分配空池。
 - 可销毁激励额度绑定地址当轮实际铸造的激励。
 - 提前参与通过得分系数获得更高得分。
-- 所有份额、累计值和历史都可被前端及链下空投程序核验。
+- 所有份额、累计值和历史都可被前端及外部空投程序核验。
+- 可选使用同链 ERC20 动态剩余池，让参与地址按领取时余额直接领取。
 - 合约不可升级、无 owner、无管理员配置、无资产救援入口。
 
 Burn 明确不做：
 
-- 不支持部署后的新社区、孙币或更深层代币。
-- 不支持 beneficiary、代销毁、额度转让或单独 BSC 接收地址。
-- 不处理 BSC 空投资金和跨链消息。
-- 不保存逐笔历史数组，不在链上保存具体空投数量。
+- 不支持部署后新完成发射的直接子币，也不递归包含范围代币的孙币或更深层代币。
+- 不支持 beneficiary、代销毁、额度转让或单独接收地址。
+- 不负责未配置空投代币时的外部分配流程。
+- 不保存逐笔历史数组，不为未领取地址预存固定空投数量。
+- 不快照空投池，不限制后续转入，也不提供空投资产救援入口。
 - 不设置最低销毁量、最低参与率或类别激活截止。
 
 ## 2. 构造与协议依赖
 
 ```solidity
+struct CommunityWeight {
+    address tokenAddress;
+    uint256 weight;
+}
+
 constructor(
     address extensionCenterAddress,
+    address scopeTokenAddress,
+    address airdropTokenAddress,
+    CommunityWeight[] memory communityWeights,
     uint256 startRound,
     uint256 roundCount,
     uint256 quotaMultiplier,
@@ -39,19 +49,26 @@ constructor(
 
 构造参数规则：
 
-- `extensionCenterAddress` 不得为零地址。
+- `extensionCenterAddress` 和 `scopeTokenAddress` 不得为零地址。
+- `scopeTokenAddress` 必须是该 ExtensionCenter 对应 Launch 已经完成发射的 LOVE20Token。
+- `airdropTokenAddress` 可以为零地址，表示 Burn 只提供份额；非零时必须有合约代码、不得等于 `scopeTokenAddress`，并由部署校验确认它是标准 ERC20。它可以与范围代币之外的参与社区资产地址相同。
+- `communityWeights` 不得为空，范围代币必须出现且只能出现一次。
+- 每项 `weight > 0`，代币地址不得重复；范围代币以外的代币必须是已经完成发射的直接子币。
+- 权重是无单位的正整数相对值，Burn 只保存并按比例使用，不定义其链下计算方法。
 - `roundCount > 0`。
 - `quotaMultiplier > 0`，使用整数，例如 `5` 表示五倍。
 - `startRound >= LOVE20Verify.currentRound()`。
 - `endRound = startRound + roundCount - 1`，溢出则部署回滚。
 - Factory 不得为零地址或重复；空数组合法，表示仅支持基础 Mint 行动。
 
-ExtensionCenter 是唯一协议地址入口。Burn 从其不可变 getter 获取 Launch、Stake、Vote、Verify、Mint 和 Uniswap V2 Factory 等地址，不再接受这些地址的独立配置。实现可以缓存频繁使用的派生地址为 immutable，但不能形成第二套可配置来源。
+ExtensionCenter 是唯一协议地址入口。Burn 从其不可变 getter 获取 Launch、Stake、Vote、Verify 和 Mint 等地址，不再接受这些地址的独立配置。实现可以缓存频繁使用的派生地址为 immutable，但不能形成第二套可配置来源。
 
 以下配置通过 `public immutable` 或只读数组公开：
 
 ```solidity
 extensionCenter()
+scopeTokenAddress()
+airdropTokenAddress()
 startRound()
 roundCount()
 endRound()
@@ -62,46 +79,41 @@ isSupportedExtensionFactory(factory)
 
 ## 3. 参与社区与社区权重
 
-### 3.1 社区发现
+### 3.1 社区配置校验
 
-部署时按以下顺序发现社区：
+部署时按以下顺序校验 `communityWeights`：
 
-1. `LOVE20Launch.tokensAtIndex(0)` 是 LOVE20 根币。
-2. 根币必须已经完成公平发射。
-3. 通过 `launchedChildTokensCount/AtIndex(LOVE20)` 枚举已经完成发射的直接子币。
-4. 分别计算根币及直接子币的社区权重和得分系数基准。
-5. 只保留权重大于零的社区并冻结列表。
-6. 若没有任何正权重社区，部署回滚 `NoParticipatingCommunities()`。
+1. 校验 `scopeTokenAddress` 是已经完成公平发射的 LOVE20Token。
+2. 逐项拒绝零地址、零权重和重复代币。
+3. 范围代币自身合法；其他代币必须已经完成发射，且其 `parentTokenAddress` 必须等于范围代币。
+4. 范围代币必须在数组中出现，直接子币可以只配置本次计划支持的子集。
+5. 按传入顺序冻结参与社区、权重和各社区的 `scoreBase`，同时累加 `totalCommunityWeight`。
 
-部署后的新币、孙币、更深层代币和零权重社区不参与。
+未配置的直接子币、部署后新完成发射的直接子币、范围代币的孙币和更深层代币均不参与。范围代币可以是 LOVE20 根币，也可以是任意已经完成发射的子币；参与范围始终只向下展开一层。
 
-### 3.2 权重公式
+### 3.2 权重语义
 
-每个社区的 SL 合约对应一个 Uniswap V2 Pair：
+Burn 不读取部署时的 SL、LP、储备或价格来计算社区权重：
 
 ```text
-weight = floor(
-    love20Reserve * pair.balanceOf(slTokenAddress) / pair.totalSupply()
-)
+communityWeight = 构造参数中该社区的 weight
+totalCommunityWeight = 所有已配置社区 weight 之和
 ```
 
-- 根币社区取 LOVE20/TKM Pair 的 LOVE20 储备，即 SL Pair 的社区代币侧储备。
-- 直接子币社区取子币/LOVE20 Pair 的 LOVE20 储备，即 SL Pair 的父币侧储备。
-- 使用 SL 合约实际持有的全部 LP，包括可提取 LP、协议手续费对应 LP 和直接转入 LP，不单独拆分。
-- ST 中锁定的社区代币或 LOVE20 不计入社区权重；ST 只参与加速质押凭证锁定类别的销毁竞争。
-- Pair 总 LP、SL 的 LP 余额或 LOVE20 储备任一为零时，该社区权重为零并被排除，不执行除零运算。
-- 权重只在部署时计算一次，之后不随池子变化。
+- 权重只表达社区之间的相对比例，不要求使用 `1e18` 精度，也不要求具有代币数量单位。
+- 权重如何得出由每次部署自行决定，不属于 Burn 的合约规则。
+- 权重在部署时冻结，之后不随任何市场、流动性或质押状态变化。
 
 只读接口：
 
 ```solidity
 communities() returns (address[] memory)
 communityWeight(address tokenAddress) returns (uint256)
-communityBase(address tokenAddress) returns (uint256)
+scoreBase(address tokenAddress) returns (uint256)
 totalCommunityWeight() returns (uint256)
 ```
 
-`communityWeight(tokenAddress) == 0` 和 `communityBase(tokenAddress) == 0` 表示非参与社区。其他需要社区语义的详细查询和全部写入口遇到非参与社区时回滚 `UnsupportedCommunity(tokenAddress)`。
+`communityWeight(tokenAddress) == 0` 和 `scoreBase(tokenAddress) == 0` 表示非参与社区。其他需要社区语义的详细查询和全部写入口遇到非参与社区时回滚 `UnsupportedCommunity(tokenAddress)`。
 
 ## 4. 销毁周期
 
@@ -140,12 +152,12 @@ finalized = LOVE20Verify.currentRound() > endRound + 1
 
 四个类别的基础权重相同：
 
-| 类别 | 资产处理 | 基础份额 |
-| --- | --- | ---: |
-| `SLTokenLock` | 永久锁定流动性质押凭证 | 25% |
-| `STTokenLock` | 永久锁定加速质押凭证 | 25% |
-| `GovRewardBurn` | 真实销毁治理激励代币 | 25% |
-| `ActionRewardBurn` | 真实销毁行动激励代币 | 25% |
+| 类别               | 资产处理               | 基础份额 |
+| ------------------ | ---------------------- | -------: |
+| `SLTokenLock`      | 永久锁定流动性质押凭证 |      25% |
+| `STTokenLock`      | 永久锁定加速质押凭证   |      25% |
+| `GovRewardBurn`    | 真实销毁治理激励代币   |      25% |
+| `ActionRewardBurn` | 真实销毁行动激励代币   |      25% |
 
 类别在整个销毁周期内的社区总得分大于零时为活跃类别。社区至少有一个活跃类别时为活跃社区。
 
@@ -161,7 +173,7 @@ communityShare = floor(
 )
 ```
 
-四类均无得分的社区退出分配。若全局没有活跃社区，所有地址份额为零，链下程序不生成个人空投。
+四类均无得分的社区退出分配。若全局没有活跃社区，所有地址份额为零；同链模式无人可以领取，外部空投程序也不生成个人分配。
 
 ### 5.2 类别重新归一化
 
@@ -189,7 +201,7 @@ accountCategoryShare = floor(
 
 全部定点数使用 `1e18` 精度。
 
-每个参与社区在 Burn 部署时按当时状态计算并冻结 `base`：
+每个参与社区在 Burn 部署时按当时状态计算并冻结 `scoreBase`：
 
 ```text
 rewardRatePerThousand = LOVE20Mint.ROUND_REWARD_GOV_PER_THOUSAND()
@@ -200,21 +212,23 @@ deploymentRoundReward = floor(
     * rewardRatePerThousand / 1000
 )
 
-base = 1e18 + floor(
+scoreBase = 1e18 + floor(
     deploymentRoundReward * 1e18 / token.totalSupply()
 )
-scoreMultiplier(R) = powWad(base, endRound - R)
+scoreMultiplier(R) = powWad(scoreBase, endRound - R)
 ```
+
+`scoreBase` 是提前销毁对应的复利基数，`scoreMultiplier` 是指定轮次实际乘到锁定或销毁数量上的销毁得分系数。二者只参与得分计算，不参与可销毁额度计算；额度仍单独使用 `actualMintedReward * quotaMultiplier`。
 
 规则：
 
 - `deploymentRoundReward` 使用未铸造空间和 Mint 的实际激励比例，不读取 `rewardAvailable`，因此不受当轮激励是否已经 prepare 或 reserved 影响。
-- `base` 和部署时的激励、供应量只取一次，之后不随铸造、原生销毁或协议预留变化。
+- `scoreBase` 和部署时的激励、供应量只取一次，之后不随铸造、原生销毁或协议预留变化。
 - 指数只包含当前轮之后的未来销毁轮次。
 - 最后一轮 `endRound - R == 0`，系数为 `1e18`。
 - `powWad` 使用内部平方求幂，复杂度 O(log n)，每次 `Math.mulDiv` 向下取整。
-- 只对正权重社区计算 `base`；正权重社区若 `totalSupply == 0`，部署回滚 `InvalidCommunityBase(token)`。
-- 同社区所有销毁轮次和四类操作使用同一部署时 `base`。
+- 只对已配置社区计算 `scoreBase`；社区代币若 `totalSupply == 0`，部署回滚 `InvalidScoreBase(token)`。
+- 同社区所有销毁轮次和四类操作使用同一部署时 `scoreBase`。
 
 地址在同一社区、轮次、类别内分次操作时，按累计值差额计分：
 
@@ -233,7 +247,7 @@ scoreMultiplier(address tokenAddress, uint256 round)
     returns (uint256 multiplier)
 ```
 
-- 销毁周期内的轮次直接按部署时 `base` 计算，查询不写状态。
+- 销毁周期内的轮次直接按部署时 `scoreBase` 计算，查询不写状态。
 - `round < startRound` 或 `round > endRound` 时返回零；非参与社区回滚 `UnsupportedCommunity`。
 
 ## 7. 资产处理与额度
@@ -321,14 +335,18 @@ function burnActionRewardTokens(
     uint256 round,
     ActionRewardBurnRequest[] calldata requests
 ) external;
+
+function claimAirdrop() external returns (uint256 amount);
 ```
 
-全部写入口：
+全部锁定和销毁入口：
 
 - 只为 `msg.sender` 消耗额度并记分。
 - 要求社区受支持、传入 `round` 当前开放、数量大于零；交易延迟到其他轮次执行时回滚，不按新轮次记账。
 - 在资产永久转移成功后整笔交易才成立。
 - 不接受原生币，不提供 permit、beneficiary 或接收地址参数。
+
+`claimAirdrop()` 只在配置了同链空投代币且份额已经最终确定时可调用。它只向 `msg.sender` 转账，不接收领取地址参数；具体计算及状态见 9.6 节。
 
 ## 9. 状态与累计查询
 
@@ -452,13 +470,54 @@ function isParticipant(address account) external view returns (bool);
 
 地址第一次通过 Burn 入口成功锁定或销毁时加入全局去重列表。`limit == 0` 或 `offset` 越界时返回空数组，末页自动截短；直接转账不加入列表。
 
+### 9.6 可选同链空投
+
+```solidity
+struct AirdropState {
+    bool enabled;
+    bool shareFinalized;
+    bool isClaimed;
+    uint256 share;
+    uint256 claimableAmount;
+    uint256 claimedAmount;
+}
+
+function remainingAirdropShare() external view returns (uint256);
+
+function accountAirdropState(
+    address account
+) external view returns (AirdropState memory);
+```
+
+`airdropTokenAddress == address(0)` 时，`enabled = false`，Burn 仍正常计算份额，但 `claimableAmount` 和 `claimedAmount` 为零，`claimAirdrop()` 回滚 `AirdropDisabled()`；外部程序可以读取最终份额并自行完成分配。
+
+配置同链空投代币时，`remainingAirdropShare` 初始为 `1e18`。份额最终确定后，尚未领取地址的当前可领取量为：
+
+```text
+claimableAmount = floor(
+    airdropToken.balanceOf(Burn)
+    * accountFinalShare
+    / remainingAirdropShare
+)
+```
+
+成功领取时，Burn 保存该地址的 `claimedAmount`，并从 `remainingAirdropShare` 扣除该地址的最终份额，再向同一地址转账。最终份额已经由 `accountShare` 固定，不重复保存领取时份额；领取事件记录该值。每个地址只能成功领取一次，最终份额或计算金额为零时不能领取。
+
+该模式没有空投池快照：
+
+- 每个地址的数量在其成功领取时确定；领取前的 `claimableAmount` 只是按当前余额计算的实时值。
+- 领取期间任何地址都可以继续向 Burn 转入空投代币，新增余额只由尚未领取的地址按剩余份额分配，已经领取的地址不补发。
+- 每次计算向下取整，先前留下的最小单位余量会留在余额中并影响后续领取；不同领取顺序可能产生少量最小计量单位差异。
+- 地址份额计算本身的舍入余量不会从 `remainingAirdropShare` 扣除。全部参与地址领取后仍可能有余额，之后再转入的代币也无人可以领取，且 Burn 不提供取回入口。
+- `accountAirdropState` 在份额最终确定前返回实时份额预览、`shareFinalized = false` 和零可领取量；成功领取后返回零可领取量及实际 `claimedAmount`。
+
 ## 10. 事件
 
 ```solidity
 event CommunityConfigFrozen(
     address indexed tokenAddress,
     uint256 weight,
-    uint256 base,
+    uint256 scoreBase,
     uint256 totalSupply,
     uint256 deploymentRoundReward
 );
@@ -520,9 +579,16 @@ event ActionRewardTokenBurned(
     uint256 communityTotalAmount,
     uint256 communityTotalScore
 );
+
+event AirdropClaimed(
+    address indexed account,
+    uint256 share,
+    uint256 amount,
+    uint256 remainingShare
+);
 ```
 
-四种操作事件中的累计数量和得分都是地址或社区在该类别内的全周期累计值。事件不记录份额，因为其他人的后续操作仍会改变份额。
+四种锁定或销毁事件中的累计数量和得分都是地址或社区在该类别内的全周期累计值。它们不记录份额，因为其他人的后续操作仍会改变份额。`AirdropClaimed` 只在份额已经固定后发出，记录领取所用最终份额、实际数量和领取后的剩余份额。
 
 ## 11. 错误
 
@@ -532,6 +598,8 @@ event ActionRewardTokenBurned(
 error ZeroAddress();
 error ZeroAmount();
 error EmptyBatch();
+error InvalidScopeToken(address tokenAddress);
+error InvalidAirdropToken(address tokenAddress);
 error InvalidRoundCount();
 error InvalidQuotaMultiplier();
 error StartRoundTooEarly(
@@ -539,46 +607,57 @@ error StartRoundTooEarly(
     uint256 startRound
 );
 error DuplicateExtensionFactory(address factory);
-error NoParticipatingCommunities();
-error InvalidCommunityBase(address tokenAddress);
+error InvalidCommunityConfig(address tokenAddress);
+error DuplicateCommunity(address tokenAddress);
+error MissingScopeCommunity();
+error InvalidScoreBase(address tokenAddress);
 error UnsupportedCommunity(address tokenAddress);
 error RoundNotOpen(uint256 round, uint256 currentVerifyRound);
 error NoClaimedReward();
 error BurnQuotaExceeded(uint256 unusedQuotaAmount, uint256 requestedAmount);
 error UnsupportedExtensionFactory(address factory);
+error AirdropDisabled();
+error ShareNotFinalized();
+error AirdropAlreadyClaimed();
+error NoClaimableAirdrop();
 ```
 
 不存在的 actionId、无激励行动或尚未完成激励铸造的行动均没有可销毁额度，统一表现为 `NoClaimedReward()`，不增加同义错误。ERC20 转账失败由 `SafeERC20` 原样回滚。
 
+范围代币不是已完成发射的 LOVE20Token 时回滚 `InvalidScopeToken()`；社区配置包含零地址、零权重、尚未完成发射或非直接子币时回滚 `InvalidCommunityConfig()`，重复代币和缺少范围代币分别回滚对应错误。非零空投地址没有合约代码或等于范围代币时回滚 `InvalidAirdropToken()`。空投未启用、份额尚未最终确定、地址已经领取或当前计算金额为零时，分别使用对应的单一错误。
+
 ## 12. 安全约束
 
-- 使用 `SafeERC20.safeTransferFrom` 将 SL/ST 凭证从参与地址直接转入对应社区代币合约；治理与行动激励代币先转入 Burn，再调用原生 `burn()`。
+- 使用 `SafeERC20.safeTransferFrom` 将 SL/ST 凭证从参与地址直接转入对应社区代币合约；治理与行动激励代币先转入 Burn，再调用原生 `burn()`；同链空投使用 `SafeERC20.safeTransfer`。
 - 写入口先完成所有资格、轮次、额度和来源检查，再更新累计状态并执行资产转移；任一外部调用失败时整笔交易回滚。
-- 不使用 `ReentrancyGuard`：参与社区代币及其 SL/ST 均由本次 ExtensionCenter 对应 Launch 的 LOVE20TokenFactory 创建，采用未覆盖外部转账 hook 的固定 ERC20 实现；原生 burn 不执行外部调用，扩展 `rewardByAccount` 通过 `STATICCALL` 调用，无法重入 Burn 写入口。
+- 锁定和销毁入口不使用 `ReentrancyGuard`：参与社区代币及其 SL/ST 均由本次 ExtensionCenter 对应 Launch 的 LOVE20TokenFactory 创建，采用未覆盖外部转账 hook 的固定 ERC20 实现；原生 burn 不执行外部调用，扩展 `rewardByAccount` 通过 `STATICCALL` 调用，无法重入 Burn 写入口。
+- 可选空投代币不属于 LOVE20TokenFactory 信任边界，因此 `claimAirdrop` 单独使用 `nonReentrant`，并在转账前保存领取数量和扣减剩余份额；转账失败时整笔交易回滚。
+- 同链空投只支持余额稳定、发送方余额按转账数量减少且无转账税、无 rebase 的标准 ERC20。部署校验负责验证该假设；Burn 不尝试兼容任意非标准代币。
 - 受支持扩展的信任边界是部署时冻结的 Factory，不能调用非受支持扩展读取激励。
 - 所有乘除使用 `Math.mulDiv`，全部向下取整；溢出回滚，不使用饱和值。
 - 没有 owner、升级入口、提取入口、救援入口、receive 或 payable 写入口。
-- 直接或强制转入 Burn 的资产不记分且 Burn 不提供取回入口；直接转入社区代币合约的 SL/ST 不记分且无法取回。
+- 直接或强制转入 Burn 的资产不记分且 Burn 不提供取回入口；若资产正是配置的空投代币，则按 9.6 节进入当前动态剩余池。直接转入社区代币合约的 SL/ST 不记分且无法取回。
 
 ## 13. 部署与发布校验
 
 部署前：
 
 1. 确认 ExtensionCenter 及其 Launch、Vote、Verify、Mint 等不可变地址正确。
-2. 观察 LOVE20 根币和全部直接子币的 SL Pair，排除储备、LP 余额或价格异常。
-3. 独立计算每个社区的预期 LOVE20 权重、`base` 和允许偏差。
+2. 确认范围代币已经完成发射，逐项核对社区配置只包含范围代币和本次支持的已完成发射直接子币。
+3. 确定并复核每个社区的权重。权重计算方法由部署者决定；例如可以采用最近七个完整轮次中，SL 所对应范围代币数量的中位数，但这只是示例，不属于合约规则。
 4. 核对 `startRound`、`roundCount`、派生 `endRound` 和整数 `quotaMultiplier`。
 5. 核对所有受支持 Factory 的地址、代码和激励接口。
-6. 在目标链 fork 上模拟部署、最坏批量销毁和主要聚合 view，确认不超过目标链 gas 限制。
+6. 若配置同链空投代币，确认它不等于范围代币，并验证其代码、`balanceOf/transfer` 行为及无转账税、无 rebase 假设；只需要份额时传零地址。
+7. 在目标链 fork 上模拟部署、最坏批量销毁、顺序领取和主要聚合 view，确认不超过目标链 gas 限制。
 
 部署后、公布地址前：
 
-1. 核对周期及倍数 getter。
-2. 核对 `communities()`、每个社区权重、`base` 和总权重。
+1. 核对范围代币、可选空投代币、周期及倍数 getter。
+2. 核对 `communities()`、每个社区权重、`scoreBase` 和总权重。
 3. 核对完整 Factory 数组和成员判断。
-4. 核对 `CommunityConfigFrozen` 与 `SupportedExtensionFactoryFrozen` 日志，以及每个社区的 `base`。
-5. 独立基准超出偏差、名单不完整、参数不符合本次发布计划、gas 超限或任何依赖不匹配时，视为部署失败，不公布地址。
-6. 验证合约源码，并在前端和链下空投程序中只登记通过验收的地址。
+4. 核对 `CommunityConfigFrozen` 与 `SupportedExtensionFactoryFrozen` 日志，以及每个社区的 `scoreBase`。
+5. 独立基准超出偏差、名单不完整、参数不符合本次发布计划、空投代币不符合假设、gas 超限或任何依赖不匹配时，视为部署失败，不公布地址。
+6. 验证合约源码，并在前端及需要的外部空投程序中只登记通过验收的地址。
 
 部署校验脚本必须 fail-closed：任何检查失败都累计失败数并以非零状态退出，不能只打印告警后继续返回成功。
 
@@ -590,18 +669,18 @@ error UnsupportedExtensionFactory(address factory);
 - 行动区域按需调用 `actionRewardBurnStates(account, token, round)`，用返回值构建批量销毁参数；该动态查询失败时不应阻塞 SL、ST 和治理区域。
 - `accountRoundBurnStats` 展示指定轮次四类已锁定或销毁数量与得分，`accountBurnStats` 展示全周期累计；历史页面另按地址、社区和轮次查询四种事件。
 - 所有写交易携带页面选中的 `round`；发送前仍由 Burn 校验该轮是否开放，避免跨轮延迟交易按新轮次执行。
-- 空投准备程序分页读取参与地址，并要求 `accountShare(account).finalized == true`。
-- BSC 具体数量由链下程序按 `airdropPool * share / 1e18` 计算并向下取整。
-- TKM 调用地址与 BSC 接收地址相同。合约地址能否在 BSC 接收或控制由链下程序判断，Burn 不处理。
+- `airdropTokenAddress == address(0)` 时，外部空投程序分页读取参与地址，并要求 `accountShare(account).finalized == true`；接收资格和具体数量由该外部流程决定。
+- 配置同链空投代币时，前端通过 `accountAirdropState` 展示是否可领取、领取时使用的最终份额、当前可领取数量和已经领取数量。领取前的数量会随其他领取及后续转入变化，必须标注为“当前可领取”。
+- 前端不提供空投池快照、补充资金或救援操作；任何地址直接向 Burn 转入配置的空投代币都会进入尚未领取地址的动态剩余池。
 
 ## 15. 最小验收测试
 
 实现至少覆盖：
 
-1. 从 ExtensionCenter 和 Launch 自动发现根币、直接子币，正确排除未来币、孙币和零权重社区。
-2. 权重只按 SL 实际 LP 余额计算，并包含手续费及直接转入 LP；ST 资产不计入权重。
+1. 范围代币为根币或普通子币时，正确接受显式配置的范围代币及已完成发射直接子币，并拒绝空数组、缺少范围代币、零权重、重复代币、未完成发射代币、其他代币和更深层后代。
+2. `communityWeight` 与构造参数完全一致，`totalCommunityWeight` 正确求和；部署时的 SL、LP、储备和价格变化不影响链上冻结权重。
 3. `isRoundOpen(round)` 在开始前、开始、最后和结束后边界正确，最后开放窗口后推进一次即最终确定。
-4. 部署时 `base` 快照、所有轮次确定性系数、最后一轮系数和 O(log n) 定点幂正确。
+4. 部署时 `scoreBase` 冻结、所有轮次确定性 `scoreMultiplier`、最后一轮系数和 O(log n) 定点幂正确。
 5. 同轮拆单与合并得到相同累计得分。
 6. SL/ST 新凭证、部分及重复锁定正确，凭证进入对应社区代币合约而非 Burn；直接转入社区代币合约只增加社区累计永久锁定量，直接转入任一地址都不产生 Burn 得分。
 7. 治理与行动状态按显式 `round` 查询；激励只使用实际铸造量且排除 burnReward，额度跨轮失效，历史未使用额度仅展示；含二次分配的扩展仍将 claimant 的整笔 mintReward 作为其额度，recipient 不产生独立额度。
@@ -610,4 +689,7 @@ error UnsupportedExtensionFactory(address factory);
 10. 活跃类别和活跃社区重新归一化、全局无人参与、所有舍入余量处理正确。
 11. 四种事件字段、指定轮次与全周期累计值、参与地址去重、`limit == 0` 及分页边界正确。
 12. 单地址四类明细之和等于 `accountTokenShare.total`，跨社区之和等于 `accountShare.share`，所有地址份额之和允许因向下取整小于 `1e18`。
-13. 部署校验脚本注入错误权重、`base`、依赖、参数或 gas 结果时必须以非零状态退出。
+13. 零空投代币地址模式只提供份额且所有领取调用回滚；空投代币等于范围代币时部署回滚；同链模式只允许最终份额为正的地址成功领取一次。
+14. 同链空投按当前余额和剩余份额计算：固定余额下不同领取顺序只产生少量最小计量单位差异，领取中新增余额只分给尚未领取地址，全部地址领取后新增余额及份额舍入对应余额无法领取。
+15. `claimAirdrop` 在空投代币回调重入、转账失败和计算结果为零时正确回滚且不改变状态；`accountAirdropState` 在禁用、销毁中、可领取和已领取状态下字段一致。
+16. 部署校验脚本注入错误范围、权重、`scoreBase`、依赖、空投代币行为、参数或 gas 结果时必须以非零状态退出。
