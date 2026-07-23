@@ -2,7 +2,7 @@
 
 状态：已确认，待实现。
 
-本合约以下简称 `Burn`。它在 TKM 链永久锁定 LOVE20 生态的 SL/ST 凭证、真实销毁治理与行动奖励代币，并计算各地址获得 BSC 空投池的份额。Burn 不跨链、不持有 BSC 资产，也不计算具体空投代币数量。
+本合约以下简称 `Burn`。它在 TKM 链将 LOVE20 生态的 SL/ST 凭证永久锁定到对应社区代币合约、真实销毁治理与行动激励代币，并计算各地址获得 BSC 空投池的份额。Burn 不跨链、不持有 BSC 资产，也不计算具体空投代币数量。
 
 领域术语以 [CONTEXT.md](../CONTEXT.md) 为准，关键取舍见 [ADR](./adr/)。
 
@@ -12,7 +12,7 @@ Burn 必须做到：
 
 - LOVE20 根币及部署时已经完成发射的直接子币可以参与。
 - 四类资产分别竞争份额，并在无人参与时重新分配空池。
-- 可销毁奖励额度绑定地址当轮实际领取的激励。
+- 可销毁激励额度绑定地址当轮实际铸造的激励。
 - 提前参与通过得分系数获得更高得分。
 - 所有份额、累计值和历史都可被前端及链下空投程序核验。
 - 合约不可升级、无 owner、无管理员配置、无资产救援入口。
@@ -105,13 +105,13 @@ totalCommunityWeight() returns (uint256)
 
 ## 4. 销毁周期
 
-Burn 轮次等于 LOVE20Mint 奖励轮次。奖励轮次 `R` 仅在：
+Burn 轮次等于 LOVE20Mint 激励轮次。激励轮次 `R` 仅在：
 
 ```text
 LOVE20Verify.currentRound() == R + 1
 ```
 
-时开放。因此当前奖励轮次为：
+时开放。因此当前激励轮次为：
 
 ```text
 Verify.currentRound() == 0 时：round = 0，open = false
@@ -144,8 +144,8 @@ finalized = LOVE20Verify.currentRound() > endRound + 1
 | --- | --- | ---: |
 | `SLTokenLock` | 永久锁定流动性质押凭证 | 25% |
 | `STTokenLock` | 永久锁定加速质押凭证 | 25% |
-| `GovRewardBurn` | 真实销毁治理奖励代币 | 25% |
-| `ActionRewardBurn` | 真实销毁行动奖励代币 | 25% |
+| `GovRewardBurn` | 真实销毁治理激励代币 | 25% |
+| `ActionRewardBurn` | 真实销毁行动激励代币 | 25% |
 
 类别在整个销毁周期内的社区总得分大于零时为活跃类别。社区至少有一个活跃类别时为活跃社区。
 
@@ -208,8 +208,8 @@ scoreMultiplier(R) = powWad(base, endRound - R)
 
 规则：
 
-- `deploymentRoundReward` 使用未铸造空间和 Mint 的实际奖励比例，不读取 `rewardAvailable`，因此不受当轮奖励是否已经 prepare 或 reserved 影响。
-- `base` 和部署时的奖励、供应量只取一次，之后不随领取、原生销毁或协议预留变化。
+- `deploymentRoundReward` 使用未铸造空间和 Mint 的实际激励比例，不读取 `rewardAvailable`，因此不受当轮激励是否已经 prepare 或 reserved 影响。
+- `base` 和部署时的激励、供应量只取一次，之后不随铸造、原生销毁或协议预留变化。
 - 指数只包含当前轮之后的未来销毁轮次。
 - 最后一轮 `endRound - R == 0`，系数为 `1e18`。
 - `powWad` 使用内部平方求幂，复杂度 O(log n)，每次 `Math.mulDiv` 向下取整。
@@ -240,16 +240,18 @@ scoreMultiplier(address tokenAddress, uint256 round)
 
 ### 7.1 SL/ST 凭证永久锁定
 
-- Burn 从 `msg.sender` 收取指定社区的 SL 或 ST 凭证并永久持有。
+- Burn 将 `msg.sender` 的指定社区 SL 或 ST 凭证直接转入该社区的 LOVE20Token 合约地址 `tokenAddress`，自身不持有凭证。
+- LOVE20Token 没有转出任意 ERC20 的入口，且无法以凭证持有人身份主动调用 Stake 退出流程，因此转入的 SL/ST 永久锁定。
 - 合约允许任意正数和同轮、跨轮重复锁定。
 - 部署后新产生或新转入的合法凭证也可以参与。
 - 标准前端默认提交调用时全部余额，不提供减少数量的交互。
-- 直接向 Burn 转入凭证不产生得分、不加入参与地址列表，也不能取回。
+- 直接向 Burn 或社区代币合约转入凭证不产生得分、不加入参与地址列表，也不能取回。
+- `SLToken.balanceOf(tokenAddress)` 和 `STToken.balanceOf(tokenAddress)` 表示该社区历史累计永久锁定量，包含误转和未通过 Burn 的主动转入；本次 Burn 获得计分的锁定量仍以累计状态和事件为准。
 - 锁定可能使原地址 `validGovVotes()` 归零，且正常退出原质押可能要求重新获得缺失凭证；这是已接受结果。
 
-### 7.2 治理奖励代币销毁
+### 7.2 治理激励代币销毁
 
-治理奖励的实际领取量直接读取：
+治理激励的实际铸造量直接读取：
 
 ```text
 LOVE20Mint.govRewardMintedByAccount(token, round, account)
@@ -266,21 +268,21 @@ remaining = quota - burnedInThisRound
 
 Burn 先从 `msg.sender` 收取社区代币，再调用该 LOVE20Token 的原生 `burn()`。这会降低 `totalSupply`，并使销毁数量重新进入未来可铸空间。
 
-### 7.3 行动奖励来源
+### 7.3 行动激励来源
 
-行动奖励按 `token + round + actionId + account` 独立核销额度。基础与扩展来源互斥：
+行动激励按 `token + round + actionId + account` 独立核销额度。基础与扩展来源互斥：
 
-1. `ExtensionCenter.extension(token, actionId) == address(0)`：只读取 LOVE20Mint 基础行动奖励。
+1. `ExtensionCenter.extension(token, actionId) == address(0)`：只读取 LOVE20Mint 基础行动激励。
 2. 扩展地址非零：只读取该扩展的 `rewardByAccount(round, account)`。
 3. 扩展的 Factory 必须在部署时冻结的受支持 Factory 列表内；否则状态查询跳过，写入回滚。
-4. 扩展奖励只使用已领取记录中的 `mintReward`，不使用扩展的 `burnReward`；该笔额度整体归属于发起领取的地址（claimant），扩展内部向 recipients 的二次分配不再拆分 Burn 额度。
+4. 扩展激励只使用已领取记录中实际铸造的 `mintReward`，不使用扩展的 `burnReward`；该笔额度整体归属于发起领取的地址（claimant），扩展内部向 recipients 的二次分配不再拆分 Burn 额度。
 5. 销毁周期内由受支持 Factory 新建并登记的扩展行动可以参与。
 
-基础行动的实际领取量读取 `actionRewardMintedByAccount`；扩展行动以 `rewardByAccount` 返回的 `claimed` 和已经保存的 `mintReward` 为准。未领取奖励只展示，额度和剩余额度均为零。
+基础行动的实际铸造量读取 `actionRewardMintedByAccount`；扩展行动以 `rewardByAccount` 返回的 `claimed` 和已经保存的 `mintReward` 为准。尚未铸造的理论激励只展示，额度和剩余额度均为零。
 
 ### 7.4 行动批量销毁
 
-仅行动奖励提供批量入口。批次可以混合多个社区和 actionId，采用全有或全无语义。
+仅行动激励提供批量入口。批次可以混合多个社区和 actionId，采用全有或全无语义。
 
 - 每项数量必须大于零。
 - 任意项失败，整个批次回滚。
@@ -338,7 +340,7 @@ function isRoundOpen(uint256 round) external view returns (bool);
 
 仅当 `startRound <= round <= endRound`、`Verify.currentRound() > 0` 且 `round == Verify.currentRound() - 1` 时返回 `true`。实现先检查 Verify 为正数再做减法，使任意查询参数都不会因 `round + 1` 溢出。前端仍可查询历史轮次状态，但只有返回 `true` 时才启用锁定和销毁交易。
 
-### 9.2 治理与行动奖励状态
+### 9.2 治理与行动激励状态
 
 ```solidity
 struct RewardBurnState {
@@ -369,9 +371,9 @@ function actionRewardBurnStates(
 ) external view returns (ActionRewardBurnState[] memory);
 ```
 
-未领取时，`claimableRewardAmount` 表示理论可领取奖励，`claimedRewardAmount`、额度和已用量均为零。领取后，`claimableRewardAmount` 为零，`claimedRewardAmount` 表示实际归属于 claimant 的奖励；`burnQuotaAmount`、`burnedAmount` 和 `unusedQuotaAmount` 分别表示指定轮次的总额度、已销毁量和未使用额度，并满足 `burnedAmount + unusedQuotaAmount == burnQuotaAmount`。历史轮次的未使用额度只用于展示，不能继续销毁；前端必须结合 `isRoundOpen(round)` 决定是否允许操作。活动周期外，治理状态返回全零，行动状态返回空数组。
+尚未铸造时，`claimableRewardAmount` 表示理论可铸造激励，`claimedRewardAmount`、额度和已用量均为零。实际铸造后，`claimableRewardAmount` 为零，`claimedRewardAmount` 表示实际归属于 claimant 的激励；`burnQuotaAmount`、`burnedAmount` 和 `unusedQuotaAmount` 分别表示指定轮次的总额度、已销毁量和未使用额度，并满足 `burnedAmount + unusedQuotaAmount == burnQuotaAmount`。历史轮次的未使用额度只用于展示，不能继续销毁；前端必须结合 `isRoundOpen(round)` 决定是否允许操作。活动周期外，治理状态返回全零，行动状态返回空数组。
 
-`actionRewardBurnStates` 遍历 LOVE20Vote 指定轮次的全局 `votedActionIds`，不能使用地址自己的投票列表，因为行动奖励领取者不一定是投票者。结果只保留奖励大于零或已有销毁记录的受支持行动；基础 Mint 行动的 `extensionAddress` 为零，非受支持 Factory 的行动不调用扩展并直接跳过。每个地址每轮最多提交一个行动；当 `SUBMIT_MIN_PER_THOUSAND > 0` 时，已提交行动理论上限不超过 `floor(1000 / SUBMIT_MIN_PER_THOUSAND)`，已投票行动只是其子集。活动周期外返回空数组，不分页，部署校验必须覆盖该上限下的 view gas。
+`actionRewardBurnStates` 遍历 LOVE20Vote 指定轮次的全局 `votedActionIds`，不能使用地址自己的投票列表，因为行动激励归属地址不一定是投票者。结果只保留激励大于零或已有销毁记录的受支持行动；基础 Mint 行动的 `extensionAddress` 为零，非受支持 Factory 的行动不调用扩展并直接跳过。每个地址每轮最多提交一个行动；当 `SUBMIT_MIN_PER_THOUSAND > 0` 时，已提交行动理论上限不超过 `floor(1000 / SUBMIT_MIN_PER_THOUSAND)`，已投票行动只是其子集。活动周期外返回空数组，不分页，部署校验必须覆盖该上限下的 view gas。
 
 ### 9.3 轮次与全周期累计
 
@@ -448,7 +450,7 @@ function participants(
 function isParticipant(address account) external view returns (bool);
 ```
 
-地址第一次通过正式入口成功锁定或销毁时加入全局去重列表。`limit == 0` 或 `offset` 越界时返回空数组，末页自动截短；直接转账不加入列表。
+地址第一次通过 Burn 入口成功锁定或销毁时加入全局去重列表。`limit == 0` 或 `offset` 越界时返回空数组，末页自动截短；直接转账不加入列表。
 
 ## 10. 事件
 
@@ -546,17 +548,17 @@ error BurnQuotaExceeded(uint256 unusedQuotaAmount, uint256 requestedAmount);
 error UnsupportedExtensionFactory(address factory);
 ```
 
-不存在的 actionId、无奖励行动或未领取行动都没有已领取奖励额度，统一表现为 `NoClaimedReward()`，不增加同义错误。ERC20 转账失败由 `SafeERC20` 原样回滚。
+不存在的 actionId、无激励行动或尚未完成激励铸造的行动均没有可销毁额度，统一表现为 `NoClaimedReward()`，不增加同义错误。ERC20 转账失败由 `SafeERC20` 原样回滚。
 
 ## 12. 安全约束
 
-- 使用 `SafeERC20.safeTransferFrom` 收取代币和凭证。
+- 使用 `SafeERC20.safeTransferFrom` 将 SL/ST 凭证从参与地址直接转入对应社区代币合约；治理与行动激励代币先转入 Burn，再调用原生 `burn()`。
 - 写入口先完成所有资格、轮次、额度和来源检查，再更新累计状态并执行资产转移；任一外部调用失败时整笔交易回滚。
 - 不使用 `ReentrancyGuard`：参与社区代币及其 SL/ST 均由本次 ExtensionCenter 对应 Launch 的 LOVE20TokenFactory 创建，采用未覆盖外部转账 hook 的固定 ERC20 实现；原生 burn 不执行外部调用，扩展 `rewardByAccount` 通过 `STATICCALL` 调用，无法重入 Burn 写入口。
-- 受支持扩展的信任边界是部署时冻结的 Factory，不能调用非受支持扩展读取奖励。
+- 受支持扩展的信任边界是部署时冻结的 Factory，不能调用非受支持扩展读取激励。
 - 所有乘除使用 `Math.mulDiv`，全部向下取整；溢出回滚，不使用饱和值。
 - 没有 owner、升级入口、提取入口、救援入口、receive 或 payable 写入口。
-- 直接或强制转入的任何资产不记分且不可取回。
+- 直接或强制转入 Burn 的资产不记分且 Burn 不提供取回入口；直接转入社区代币合约的 SL/ST 不记分且无法取回。
 
 ## 13. 部署与发布校验
 
@@ -566,7 +568,7 @@ error UnsupportedExtensionFactory(address factory);
 2. 观察 LOVE20 根币和全部直接子币的 SL Pair，排除储备、LP 余额或价格异常。
 3. 独立计算每个社区的预期 LOVE20 权重、`base` 和允许偏差。
 4. 核对 `startRound`、`roundCount`、派生 `endRound` 和整数 `quotaMultiplier`。
-5. 核对所有受支持 Factory 的地址、代码和奖励接口。
+5. 核对所有受支持 Factory 的地址、代码和激励接口。
 6. 在目标链 fork 上模拟部署、最坏批量销毁和主要聚合 view，确认不超过目标链 gas 限制。
 
 部署后、公布地址前：
@@ -584,6 +586,7 @@ error UnsupportedExtensionFactory(address factory);
 
 - 前端以选中的 `round` 为统一参数，通过批量读取同时调用 `isRoundOpen`、`scoreMultiplier`、`govRewardBurnState`、`accountRoundBurnStats` 和 `accountBurnStats`。
 - 社区代币、SL、ST 的钱包余额和对 Burn 的 allowance 直接调用各 ERC20 的 `balanceOf/allowance`，Burn 不代理标准代币查询。SL/ST 标准交互默认提交当前全部余额，不提供减少数量控件；合约接口仍允许任意正数。
+- 社区历史累计永久锁定量直接读取 `SLToken.balanceOf(tokenAddress)` 和 `STToken.balanceOf(tokenAddress)`；本次空投获得计分的锁定量读取 Burn 累计状态和事件，前端必须用不同标签展示。
 - 行动区域按需调用 `actionRewardBurnStates(account, token, round)`，用返回值构建批量销毁参数；该动态查询失败时不应阻塞 SL、ST 和治理区域。
 - `accountRoundBurnStats` 展示指定轮次四类已锁定或销毁数量与得分，`accountBurnStats` 展示全周期累计；历史页面另按地址、社区和轮次查询四种事件。
 - 所有写交易携带页面选中的 `round`；发送前仍由 Burn 校验该轮是否开放，避免跨轮延迟交易按新轮次执行。
@@ -600,8 +603,8 @@ error UnsupportedExtensionFactory(address factory);
 3. `isRoundOpen(round)` 在开始前、开始、最后和结束后边界正确，最后开放窗口后推进一次即最终确定。
 4. 部署时 `base` 快照、所有轮次确定性系数、最后一轮系数和 O(log n) 定点幂正确。
 5. 同轮拆单与合并得到相同累计得分。
-6. SL/ST 新凭证、部分及重复锁定正确，直接转账不记分。
-7. 治理与行动状态按显式 `round` 查询；奖励只使用实际领取且排除 burnReward，额度跨轮失效，历史未使用额度仅展示；含二次分配的扩展仍将 claimant 的整笔 mintReward 作为其额度，recipient 不产生独立额度。
+6. SL/ST 新凭证、部分及重复锁定正确，凭证进入对应社区代币合约而非 Burn；直接转入社区代币合约只增加社区累计永久锁定量，直接转入任一地址都不产生 Burn 得分。
+7. 治理与行动状态按显式 `round` 查询；激励只使用实际铸造量且排除 burnReward，额度跨轮失效，历史未使用额度仅展示；含二次分配的扩展仍将 claimant 的整笔 mintReward 作为其额度，recipient 不产生独立额度。
 8. 基础与扩展行动互斥，受支持 Factory 后续扩展可用，非受支持扩展不被调用。
 9. 行动批次混合社区、重复来源、零数量和中途失败的全量回滚行为正确；所有写入口传入过期、未来或交易执行时已切换的 `round` 均回滚。
 10. 活跃类别和活跃社区重新归一化、全局无人参与、所有舍入余量处理正确。
