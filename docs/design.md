@@ -63,7 +63,7 @@ constructor(
 
 ExtensionCenter 是唯一协议地址入口。Burn 从其不可变 getter 获取 Launch、Stake、Vote、Verify 和 Mint 等地址，不再接受这些地址的独立配置。实现可以缓存频繁使用的派生地址为 immutable，但不能形成第二套可配置来源。
 
-以下配置通过 `public immutable` 或只读数组公开：
+以下配置通过 `public immutable` 或只读数组公开（`scoreBase` 和 `totalCommunityWeight` 为构造时派生值，非构造参数）：
 
 ```solidity
 extensionCenter()
@@ -159,7 +159,7 @@ finalized = LOVE20Verify.currentRound() > endRound + 1
 | `GovRewardBurn`    | 真实销毁治理激励代币   |      25% |
 | `ActionRewardBurn` | 真实销毁行动激励代币   |      25% |
 
-类别在整个销毁周期内的社区总得分大于零时为活跃类别。社区至少有一个活跃类别时为活跃社区。
+某一类别在该社区的整个销毁周期内累计总得分大于零时，该类别为活跃类别。社区至少有一个活跃类别时为活跃社区。
 
 ### 5.1 社区重新归一化
 
@@ -224,6 +224,7 @@ scoreMultiplier(R) = powWad(scoreBase, endRound - R)
 
 - `deploymentRoundReward` 使用未铸造空间和 Mint 的实际激励比例，不读取 `rewardAvailable`，因此不受当轮激励是否已经 prepare 或 reserved 影响。
 - `scoreBase` 和部署时的激励、供应量只取一次，之后不随铸造、原生销毁或协议预留变化。
+- 当代币已全量铸造（`maxSupply == totalSupply`）时，`deploymentRoundReward == 0`，`scoreBase == 1e18`，各轮系数均为 `1e18`，提前参与无额外优势；这是数学上自洽的预期结果。
 - 指数只包含当前轮之后的未来销毁轮次。
 - 最后一轮 `endRound - R == 0`，系数为 `1e18`。
 - `powWad` 使用内部平方求幂，复杂度 O(log n)，每次 `Math.mulDiv` 向下取整。
@@ -389,7 +390,7 @@ function actionRewardBurnStates(
 ) external view returns (ActionRewardBurnState[] memory);
 ```
 
-尚未铸造时，`claimableRewardAmount` 表示理论可铸造激励，`claimedRewardAmount`、额度和已用量均为零。实际铸造后，`claimableRewardAmount` 为零，`claimedRewardAmount` 表示实际归属于 claimant 的激励；`burnQuotaAmount`、`burnedAmount` 和 `unusedQuotaAmount` 分别表示指定轮次的总额度、已销毁量和未使用额度，并满足 `burnedAmount + unusedQuotaAmount == burnQuotaAmount`。历史轮次的未使用额度只用于展示，不能继续销毁；前端必须结合 `isRoundOpen(round)` 决定是否允许操作。活动周期外，治理状态返回全零，行动状态返回空数组。
+尚未铸造时，`claimableRewardAmount` 表示理论可铸造激励，`claimedRewardAmount`、额度和已用量均为零。实际铸造后，`claimableRewardAmount` 为零（注意：此时字段值归零，不表示"可认领量为零"，而是激励已转入 `claimedRewardAmount`），`claimedRewardAmount` 表示实际归属于 claimant 的激励；`burnQuotaAmount`、`burnedAmount` 和 `unusedQuotaAmount` 分别表示指定轮次的总额度、已销毁量和未使用额度，并满足 `burnedAmount + unusedQuotaAmount == burnQuotaAmount`。历史轮次的未使用额度只用于展示，不能继续销毁；前端必须结合 `isRoundOpen(round)` 决定是否允许操作。活动周期外，治理状态返回全零，行动状态返回空数组。
 
 `actionRewardBurnStates` 遍历 LOVE20Vote 指定轮次的全局 `votedActionIds`，不能使用地址自己的投票列表，因为行动激励归属地址不一定是投票者。结果只保留激励大于零或已有销毁记录的受支持行动；基础 Mint 行动的 `extensionAddress` 为零，非受支持 Factory 的行动不调用扩展并直接跳过。每个地址每轮最多提交一个行动；当 `SUBMIT_MIN_PER_THOUSAND > 0` 时，已提交行动理论上限不超过 `floor(1000 / SUBMIT_MIN_PER_THOUSAND)`，已投票行动只是其子集。活动周期外返回空数组，不分页，部署校验必须覆盖该上限下的 view gas。
 
@@ -622,7 +623,7 @@ error AirdropAlreadyClaimed();
 error NoClaimableAirdrop();
 ```
 
-不存在的 actionId、无激励行动或尚未完成激励铸造的行动均没有可销毁额度，统一表现为 `NoClaimedReward()`，不增加同义错误。ERC20 转账失败由 `SafeERC20` 原样回滚。
+不存在的 actionId、无激励行动或尚未完成激励铸造的行动均没有可销毁额度，统一表现为 `NoClaimedReward()`，不增加同义错误（合约无法在不调用外部扩展的情况下区分"行动不存在"与"行动激励为零"，因此统一归类为此错误）。ERC20 转账失败由 `SafeERC20` 原样回滚。
 
 范围代币不是已完成发射的 LOVE20Token 时回滚 `InvalidScopeToken()`；社区配置包含零地址、零权重、尚未完成发射或非直接子币时回滚 `InvalidCommunityConfig()`，重复代币和缺少范围代币分别回滚对应错误。非零空投地址没有合约代码或等于范围代币时回滚 `InvalidAirdropToken()`。空投未启用、份额尚未最终确定、地址已经领取或当前计算金额为零时，分别使用对应的单一错误。
 
