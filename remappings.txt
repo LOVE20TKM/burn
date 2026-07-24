@@ -1,0 +1,4 @@
+@extension/=lib/extension/src/
+@core/=lib/extension/lib/core/src/
+@openzeppelin/contracts/=lib/extension/lib/core/lib/openzeppelin-contracts/contracts/
+forge-std/=lib/extension/lib/core/lib/forge-std/src/

@@ -1,0 +1,3 @@
+[submodule "lib/extension"]
+	path = lib/extension
+	url = https://github.com/LOVE20TKM/extension.git
