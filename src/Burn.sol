@@ -239,7 +239,7 @@ contract Burn is IBurn, ReentrancyGuard {
         }
 
         (uint256 multiplier, uint256 operationScore) =
-            _record(msg.sender, tokenAddress, round, Category.GovRewardBurn, amount);
+            _recordBurnStats(msg.sender, tokenAddress, round, Category.GovRewardBurn, amount);
         IERC20(tokenAddress).safeTransferFrom(msg.sender, address(this), amount);
         ILOVE20Token(tokenAddress).burn(amount);
         _addParticipant(msg.sender);
@@ -432,7 +432,8 @@ contract Burn is IBurn, ReentrancyGuard {
 
     function _lockReceipt(address tokenAddress, uint256 round, uint256 amount, Category category) internal {
         _validateOperation(tokenAddress, round, amount);
-        (uint256 multiplier, uint256 operationScore) = _record(msg.sender, tokenAddress, round, category, amount);
+        (uint256 multiplier, uint256 operationScore) =
+            _recordBurnStats(msg.sender, tokenAddress, round, category, amount);
 
         ILOVE20Token token = ILOVE20Token(tokenAddress);
         address receiptToken = category == Category.SLTokenLock ? token.slAddress() : token.stAddress();
@@ -521,7 +522,7 @@ contract Burn is IBurn, ReentrancyGuard {
         _actionRewardBurned[msg.sender][tokenAddress][round][request.actionId] = burned + request.amount;
 
         (uint256 multiplier, uint256 operationScore) =
-            _record(msg.sender, tokenAddress, round, Category.ActionRewardBurn, request.amount);
+            _recordBurnStats(msg.sender, tokenAddress, round, Category.ActionRewardBurn, request.amount);
         IERC20(tokenAddress).safeTransferFrom(msg.sender, address(this), request.amount);
         ILOVE20Token(tokenAddress).burn(request.amount);
         _addParticipant(msg.sender);
@@ -646,7 +647,7 @@ contract Burn is IBurn, ReentrancyGuard {
         );
     }
 
-    function _record(address account, address tokenAddress, uint256 round, Category category, uint256 amount)
+    function _recordBurnStats(address account, address tokenAddress, uint256 round, Category category, uint256 amount)
         internal
         returns (uint256 multiplier, uint256 operationScore)
     {

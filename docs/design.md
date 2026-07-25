@@ -662,6 +662,13 @@ error NoClaimableAirdrop();
 
 部署校验脚本必须 fail-closed：任何检查失败都累计失败数并以非零状态退出，不能只打印告警后继续返回成功。
 
+实现提供 `script/DeployBurn.s.sol`。脚本从环境变量读取 `EXTENSION_CENTER`、`SCOPE_TOKEN`、可选的
+`AIRDROP_TOKEN`、逗号分隔的 `COMMUNITY_TOKENS/COMMUNITY_WEIGHTS`、`START_ROUND`、
+`ROUND_COUNT`、`QUOTA_MULTIPLIER` 和可选的 `SUPPORTED_EXTENSION_FACTORIES`。部署交易广播前，脚本会
+重新核对依赖代码、全部构造参数、社区顺序与权重、独立重算的 `scoreBase`、Factory 代码及空投代币
+`balanceOf` 接口；任一不一致即回滚。目标链最坏批量 gas、空投代币转账行为及部署后的链上地址仍必须
+在本次发布的 fork 和部署后校验中确认。
+
 ## 14. 前端与空投准备
 
 - 前端以选中的 `round` 为统一参数，通过批量读取同时调用 `isRoundOpen`、`scoreMultiplier`、`govRewardBurnState`、`accountRoundBurnStats` 和 `accountBurnStats`。

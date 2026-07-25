@@ -36,6 +36,27 @@ contract MockReentrantAirdropToken is MockERC20 {
     }
 }
 
+contract MockFailingAirdropToken is MockERC20 {
+    bool public failTransfers;
+
+    constructor() MockERC20("Failing Airdrop", "FAIL") {}
+
+    function setFailTransfers(bool failTransfers_) external {
+        failTransfers = failTransfers_;
+    }
+
+    function _transfer(address from, address to, uint256 amount) internal override {
+        require(!failTransfers, "airdrop transfer failed");
+        super._transfer(from, to, amount);
+    }
+}
+
+contract MockUnreadableAirdropToken {
+    fallback() external {
+        revert("unreadable airdrop");
+    }
+}
+
 contract MockLOVE20Token is ERC20 {
     uint256 public immutable maxSupply;
     address public parentTokenAddress;

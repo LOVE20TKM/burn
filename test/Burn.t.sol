@@ -3,6 +3,7 @@ pragma solidity =0.8.17;
 
 import {Test} from "forge-std/Test.sol";
 import {Burn} from "../src/Burn.sol";
+import {DeployBurn, BurnDeploymentConfig} from "../script/DeployBurn.s.sol";
 import {
     IBurnErrors,
     CommunityWeight,
@@ -23,7 +24,9 @@ import {
     MockExtensionFactory,
     MockReward,
     MockRevertingReward,
-    MockReentrantAirdropToken
+    MockReentrantAirdropToken,
+    MockFailingAirdropToken,
+    MockUnreadableAirdropToken
 } from "./mocks/MockProtocol.sol";
 
 contract BurnTest is Test {
@@ -49,6 +52,44 @@ contract BurnTest is Test {
         address indexed tokenAddress,
         address indexed account,
         uint256 indexed round,
+        uint256 amount,
+        uint256 scoreMultiplier,
+        uint256 score,
+        uint256 accountTotalAmount,
+        uint256 accountTotalScore,
+        uint256 communityTotalAmount,
+        uint256 communityTotalScore
+    );
+    event STTokenLocked(
+        address indexed tokenAddress,
+        address indexed account,
+        uint256 indexed round,
+        uint256 amount,
+        uint256 scoreMultiplier,
+        uint256 score,
+        uint256 accountTotalAmount,
+        uint256 accountTotalScore,
+        uint256 communityTotalAmount,
+        uint256 communityTotalScore
+    );
+    event GovRewardTokenBurned(
+        address indexed tokenAddress,
+        address indexed account,
+        uint256 indexed round,
+        uint256 amount,
+        uint256 scoreMultiplier,
+        uint256 score,
+        uint256 accountTotalAmount,
+        uint256 accountTotalScore,
+        uint256 communityTotalAmount,
+        uint256 communityTotalScore
+    );
+    event ActionRewardTokenBurned(
+        address indexed tokenAddress,
+        address indexed account,
+        uint256 indexed round,
+        uint256 actionId,
+        address extensionAddress,
         uint256 amount,
         uint256 scoreMultiplier,
         uint256 score,
@@ -188,6 +229,75 @@ contract BurnTest is Test {
         );
         burn.lockSLToken(address(scopeToken), 5, 10 ether);
         vm.stopPrank();
+    }
+
+    function test_OtherBurnEventsContainOperationAndLifetimeTotals() public {
+        uint256 actionId = 9;
+        scopeST.mint(alice, 10 ether);
+        scopeToken.transfer(alice, 10 ether);
+        mint.setGovReward(address(scopeToken), 5, alice, 1 ether, 1 ether, 0, true);
+        mint.setActionReward(address(scopeToken), 5, actionId, alice, 2 ether, true);
+        verify.setCurrentRound(6);
+
+        vm.startPrank(alice);
+        scopeST.approve(address(burn), 10 ether);
+        scopeToken.approve(address(burn), 10 ether);
+
+        vm.expectEmit(true, true, true, true, address(burn));
+        emit STTokenLocked(
+            address(scopeToken),
+            alice,
+            5,
+            10 ether,
+            1.036324 ether,
+            10.36324 ether,
+            10 ether,
+            10.36324 ether,
+            10 ether,
+            10.36324 ether
+        );
+        burn.lockSTToken(address(scopeToken), 5, 10 ether);
+
+        vm.expectEmit(true, true, true, true, address(burn));
+        emit GovRewardTokenBurned(
+            address(scopeToken),
+            alice,
+            5,
+            5 ether,
+            1.036324 ether,
+            5.18162 ether,
+            5 ether,
+            5.18162 ether,
+            5 ether,
+            5.18162 ether
+        );
+        burn.burnGovRewardToken(address(scopeToken), 5, 5 ether);
+
+        ActionRewardBurnRequest[] memory requests = new ActionRewardBurnRequest[](1);
+        requests[0] = ActionRewardBurnRequest(address(scopeToken), actionId, 5 ether);
+        vm.expectEmit(true, true, true, true, address(burn));
+        emit ActionRewardTokenBurned(
+            address(scopeToken),
+            alice,
+            5,
+            actionId,
+            address(0),
+            5 ether,
+            1.036324 ether,
+            5.18162 ether,
+            5 ether,
+            5.18162 ether,
+            5 ether,
+            5.18162 ether
+        );
+        burn.burnActionRewardTokens(5, requests);
+        vm.stopPrank();
+
+        TokenShare memory share = burn.accountTokenShare(alice, address(scopeToken));
+        uint256 third = uint256(1 ether) / 3;
+        assertEq(share.stTokenLock, third);
+        assertEq(share.govRewardBurn, third);
+        assertEq(share.actionRewardBurn, third);
     }
 
     function test_SplitAndSingleLockProduceSameScore() public {
@@ -427,6 +537,38 @@ contract BurnTest is Test {
         assertEq(airdropBurn.accountAirdropState(alice).claimedAmount, 0);
     }
 
+    function test_AirdropTransferFailureAndZeroAmountLeaveStateUnchanged() public {
+        MockFailingAirdropToken airdropToken = new MockFailingAirdropToken();
+        Burn airdropBurn = _deployBurnWithAirdrop(address(airdropToken), new address[](0));
+        scopeSL.mint(alice, 2);
+        scopeSL.mint(bob, 1 ether);
+        verify.setCurrentRound(6);
+
+        vm.startPrank(alice);
+        scopeSL.approve(address(airdropBurn), 2);
+        airdropBurn.lockSLToken(address(scopeToken), 5, 2);
+        vm.stopPrank();
+        vm.startPrank(bob);
+        scopeSL.approve(address(airdropBurn), 1 ether);
+        airdropBurn.lockSLToken(address(scopeToken), 5, 1 ether);
+        vm.stopPrank();
+
+        airdropToken.mint(address(airdropBurn), 1);
+        verify.setCurrentRound(9);
+        vm.prank(alice);
+        vm.expectRevert(IBurnErrors.NoClaimableAirdrop.selector);
+        airdropBurn.claimAirdrop();
+        assertEq(airdropBurn.remainingAirdropShare(), 1 ether);
+
+        airdropToken.mint(address(airdropBurn), 1 ether);
+        airdropToken.setFailTransfers(true);
+        vm.prank(bob);
+        vm.expectRevert(bytes("airdrop transfer failed"));
+        airdropBurn.claimAirdrop();
+        assertEq(airdropBurn.remainingAirdropShare(), 1 ether);
+        assertEq(airdropBurn.accountAirdropState(bob).claimedAmount, 0);
+    }
+
     function test_ConstructorRejectsInvalidCommunityConfiguration() public {
         CommunityWeight[] memory weights = new CommunityWeight[](1);
         weights[0] = CommunityWeight(address(childToken), 1);
@@ -463,6 +605,47 @@ contract BurnTest is Test {
         new Burn(
             address(center), address(scopeToken), address(scopeToken), _communityWeights(), 5, 3, 5, new address[](0)
         );
+    }
+
+    function test_ConstructorAcceptsChildAsScopeAndRejectsInvalidScopeAndEmptyCommunities() public {
+        MockLOVE20Token grandchildToken = new MockLOVE20Token(
+            "GRANDCHILD", INITIAL_SUPPLY, MAX_SUPPLY, address(childToken), address(0x71), address(0x72)
+        );
+        launch.setToken(address(grandchildToken), address(childToken), true);
+        CommunityWeight[] memory childScopeWeights = new CommunityWeight[](2);
+        childScopeWeights[0] = CommunityWeight(address(childToken), 3);
+        childScopeWeights[1] = CommunityWeight(address(grandchildToken), 1);
+        Burn childScopeBurn =
+            new Burn(address(center), address(childToken), address(0), childScopeWeights, 5, 3, 5, new address[](0));
+        assertEq(childScopeBurn.scopeTokenAddress(), address(childToken));
+        assertEq(childScopeBurn.communities().length, 2);
+
+        vm.expectRevert(abi.encodeWithSelector(IBurnErrors.InvalidScopeToken.selector, address(0xBAD)));
+        new Burn(address(center), address(0xBAD), address(0), childScopeWeights, 5, 3, 5, new address[](0));
+
+        vm.expectRevert(IBurnErrors.MissingScopeCommunity.selector);
+        new Burn(address(center), address(scopeToken), address(0), new CommunityWeight[](0), 5, 3, 5, new address[](0));
+    }
+
+    function test_DeploymentValidationFailsClosedForMismatchesAndUnreadableAirdrop() public {
+        DeployBurn deployer = new DeployBurn();
+        BurnDeploymentConfig memory config = _deploymentConfig(address(0));
+        assertEq(deployer.validationFailureCount(burn, config), 0);
+
+        config.scopeTokenAddress = address(childToken);
+        assertGt(deployer.validationFailureCount(burn, config), 0);
+        config.scopeTokenAddress = address(scopeToken);
+        config.communities[0].weight = 601;
+        assertGt(deployer.validationFailureCount(burn, config), 0);
+        config.communities[0].weight = 600;
+
+        scopeToken.mint(address(this), 1 ether);
+        assertGt(deployer.validationFailureCount(burn, config), 0);
+
+        MockUnreadableAirdropToken unreadable = new MockUnreadableAirdropToken();
+        Burn unreadableBurn = _deployBurnWithAirdrop(address(unreadable), new address[](0));
+        BurnDeploymentConfig memory unreadableConfig = _deploymentConfig(address(unreadable));
+        assertGt(deployer.validationFailureCount(unreadableBurn, unreadableConfig), 0);
     }
 
     function test_WritesRejectZeroClosedRoundAndUnclaimedReward() public {
@@ -503,6 +686,34 @@ contract BurnTest is Test {
         assertFalse(burn.isParticipant(alice));
     }
 
+    function test_ActionBatchSupportsMixedCommunitiesAndRejectsEmptyOrZeroItems() public {
+        uint256 actionId = 41;
+        mint.setActionReward(address(scopeToken), 5, actionId, alice, 1 ether, true);
+        mint.setActionReward(address(childToken), 5, actionId, alice, 1 ether, true);
+        scopeToken.transfer(alice, 1 ether);
+        childToken.transfer(alice, 1 ether);
+        verify.setCurrentRound(6);
+
+        vm.startPrank(alice);
+        scopeToken.approve(address(burn), 1 ether);
+        childToken.approve(address(burn), 1 ether);
+        vm.expectRevert(IBurnErrors.EmptyBatch.selector);
+        burn.burnActionRewardTokens(5, new ActionRewardBurnRequest[](0));
+
+        ActionRewardBurnRequest[] memory requests = new ActionRewardBurnRequest[](2);
+        requests[0] = ActionRewardBurnRequest(address(scopeToken), actionId, 1 ether);
+        requests[1] = ActionRewardBurnRequest(address(childToken), actionId, 1 ether);
+        burn.burnActionRewardTokens(5, requests);
+        assertEq(burn.accountBurnStats(alice, address(scopeToken)).actionRewardBurn.amount, 1 ether);
+        assertEq(burn.accountBurnStats(alice, address(childToken)).actionRewardBurn.amount, 1 ether);
+
+        requests = new ActionRewardBurnRequest[](1);
+        requests[0] = ActionRewardBurnRequest(address(scopeToken), actionId, 0);
+        vm.expectRevert(IBurnErrors.ZeroAmount.selector);
+        burn.burnActionRewardTokens(5, requests);
+        vm.stopPrank();
+    }
+
     function _deployBurn() internal returns (Burn deployed) {
         deployed = _deployBurnWithFactories(new address[](0));
     }
@@ -522,5 +733,16 @@ contract BurnTest is Test {
         weights = new CommunityWeight[](2);
         weights[0] = CommunityWeight(address(scopeToken), 600);
         weights[1] = CommunityWeight(address(childToken), 400);
+    }
+
+    function _deploymentConfig(address airdropToken) internal view returns (BurnDeploymentConfig memory config) {
+        config.extensionCenterAddress = address(center);
+        config.scopeTokenAddress = address(scopeToken);
+        config.airdropTokenAddress = airdropToken;
+        config.communities = _communityWeights();
+        config.startRound = 5;
+        config.roundCount = 3;
+        config.quotaMultiplier = 5;
+        config.supportedExtensionFactories = new address[](0);
     }
 }
