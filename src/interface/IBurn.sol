@@ -13,6 +13,7 @@ struct ActionRewardBurnRequest {
 }
 
 struct RewardBurnState {
+    /// @dev Only claimableRewardAmount is populated before minting; only claimedRewardAmount after minting.
     uint256 claimableRewardAmount;
     uint256 claimedRewardAmount;
     bool isClaimed;
