@@ -1,0 +1,5 @@
+SECONDS_PER_BLOCK=2.868
+RPC_URL=https://proxy1.thinkiumrpc.net
+CHAIN_ID=70001
+VERIFIER=blockscout
+VERIFIER_URL=http://chain1.thinkiumscan.net/api/v2

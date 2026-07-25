@@ -41,6 +41,12 @@ contract DeployBurn is Script {
         vm.stopBroadcast();
 
         require(validationFailureCount(deployed, config) == 0, "deployment validation failed");
+
+        string memory network = vm.envOr("network", string("anvil"));
+        vm.writeFile(
+            string.concat("script/network/", network, "/address.burn.params"),
+            string.concat("burnAddress=", vm.toString(address(deployed)), "\n")
+        );
     }
 
     function validationFailureCount(Burn deployed, BurnDeploymentConfig memory expected)
