@@ -20,5 +20,17 @@ if [ $? -ne 0 ]; then
     return 1 2>/dev/null || exit 1
 fi
 
-source "$network_dir/address.burn.params"
+unset burnAddress
+if ! source "$network_dir/address.burn.params"; then
+    echo -e "\033[31m✗\033[0m Failed to read address.burn.params"
+    return 1 2>/dev/null || exit 1
+fi
+if [ -z "${burnAddress:-}" ]; then
+    echo -e "\033[31m✗\033[0m burnAddress is empty after deploy"
+    return 1 2>/dev/null || exit 1
+fi
+if [[ ! "$burnAddress" =~ ^0x[[:xdigit:]]{40}$ ]]; then
+    echo -e "\033[31m✗\033[0m burnAddress is invalid after deploy"
+    return 1 2>/dev/null || exit 1
+fi
 echo -e "\033[32m✓\033[0m Burn deployed at: $burnAddress"

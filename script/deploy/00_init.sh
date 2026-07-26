@@ -55,9 +55,23 @@ if [ "$START_ROUND_CONFIG" = "current" ]; then
         echo -e "\033[31mError:\033[0m START_ROUND=current is only allowed on anvil"
         return 1 2>/dev/null || exit 1
     fi
-    verify_address=$(cast call "$EXTENSION_CENTER" "verifyAddress()(address)" --rpc-url "$RPC_URL" 2>/dev/null)
-    current_round=$(cast call "$verify_address" "currentRound()(uint256)" --rpc-url "$RPC_URL" 2>/dev/null)
+    if ! verify_address=$(cast call "$EXTENSION_CENTER" "verifyAddress()(address)" --rpc-url "$RPC_URL" 2>/dev/null); then
+        echo -e "\033[31mError:\033[0m Failed to get verifyAddress from EXTENSION_CENTER"
+        return 1 2>/dev/null || exit 1
+    fi
+    if [[ ! "$verify_address" =~ ^0x[[:xdigit:]]{40}$ ]]; then
+        echo -e "\033[31mError:\033[0m Invalid verifyAddress from EXTENSION_CENTER"
+        return 1 2>/dev/null || exit 1
+    fi
+    if ! current_round=$(cast call "$verify_address" "currentRound()(uint256)" --rpc-url "$RPC_URL" 2>/dev/null); then
+        echo -e "\033[31mError:\033[0m Failed to get currentRound"
+        return 1 2>/dev/null || exit 1
+    fi
     current_round="${current_round%% *}"
+    if [[ ! "$current_round" =~ ^[0-9]+$ ]]; then
+        echo -e "\033[31mError:\033[0m Invalid currentRound"
+        return 1 2>/dev/null || exit 1
+    fi
     START_ROUND=$((current_round + 1))
     export START_ROUND
 fi
