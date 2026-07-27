@@ -19,10 +19,8 @@ check_equal "quotaMultiplier" "$QUOTA_MULTIPLIER" "$(cast_call "$burnAddress" "q
 
 actual_start=$(cast_call "$burnAddress" "startRound()(uint256)")
 actual_start="${actual_start%% *}"
-if [ "$START_ROUND_CONFIG" != "current" ]; then
-    check_equal "startRound" "$START_ROUND" "$actual_start" || ((failed++))
-fi
-expected_end=$((actual_start + ROUND_COUNT - 1))
+check_equal "startRound" "$START_ROUND" "$actual_start" || ((failed++))
+expected_end=$((START_ROUND + ROUND_COUNT - 1))
 check_equal "endRound" "$expected_end" "$(cast_call "$burnAddress" "endRound()(uint256)")" || ((failed++))
 
 normalize_array() {

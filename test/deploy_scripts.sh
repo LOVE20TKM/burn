@@ -38,9 +38,25 @@ assert_fails_with() {
     printf 'ok - %s\n' "$name"
 }
 
-init_cast_failure() (
+invalid_start_round() (
     set +u
     cd "$REPO_ROOT" || exit 1
+    local network_name="invalid_start_round_$$"
+    local network_path="$REPO_ROOT/script/network/$network_name"
+    mkdir -p "$network_path"
+    trap 'rm -rf "$network_path"' EXIT
+    : >"$network_path/.account"
+    printf '%s\n' \
+        'RPC_URL=http://127.0.0.1:8545' \
+        'CHAIN_ID=31337' >"$network_path/network.params"
+    printf '%s\n' \
+        'EXTENSION_CENTER=0x1111111111111111111111111111111111111111' \
+        'SCOPE_TOKEN=0x2222222222222222222222222222222222222222' \
+        'COMMUNITY_TOKENS=0x2222222222222222222222222222222222222222' \
+        'COMMUNITY_WEIGHTS=1' \
+        'START_ROUND=current' \
+        'ROUND_COUNT=3' \
+        'QUOTA_MULTIPLIER=5' >"$network_path/burn.params"
     cast() {
         if [ "$1" = "chain-id" ]; then
             printf '31337\n'
@@ -48,24 +64,7 @@ init_cast_failure() (
         fi
         return 1
     }
-    source script/deploy/00_init.sh anvil
-)
-
-current_round_cast_failure() (
-    set +u
-    cd "$REPO_ROOT" || exit 1
-    cast() {
-        if [ "$1" = "chain-id" ]; then
-            printf '31337\n'
-            return 0
-        fi
-        if [ "$3" = "verifyAddress()(address)" ]; then
-            printf '0x1111111111111111111111111111111111111111\n'
-            return 0
-        fi
-        return 1
-    }
-    source script/deploy/00_init.sh anvil
+    source script/deploy/00_init.sh "$network_name"
 )
 
 deploy_address_failure() (
@@ -105,13 +104,9 @@ deploy_stale_address() (
 )
 
 assert_fails_with \
-    '00_init rejects verifyAddress lookup failure' \
-    'Failed to get verifyAddress from EXTENSION_CENTER' \
-    init_cast_failure
-assert_fails_with \
-    '00_init rejects currentRound lookup failure' \
-    'Failed to get currentRound' \
-    current_round_cast_failure
+    '00_init rejects dynamic start round' \
+    'START_ROUND must be an explicit non-negative integer' \
+    invalid_start_round
 assert_fails_with \
     '01_deploy_burn rejects missing address file' \
     'Failed to read address.burn.params' \

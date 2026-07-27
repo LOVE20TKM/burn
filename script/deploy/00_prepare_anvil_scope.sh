@@ -58,12 +58,4 @@ if [ "$has_ended" != "true" ]; then
     return 1 2>/dev/null || exit 1
 fi
 
-if [ "$START_ROUND_CONFIG" = "current" ]; then
-    verify_address=$(cast_call "$EXTENSION_CENTER" "verifyAddress()(address)") || return 1 2>/dev/null || exit 1
-    current_round=$(cast_call "$verify_address" "currentRound()(uint256)") || return 1 2>/dev/null || exit 1
-    current_round="${current_round%% *}"
-    START_ROUND=$((current_round + 1))
-    export START_ROUND
-fi
-
 echo -e "\033[32m✓\033[0m Scope token launch completed"

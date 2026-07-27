@@ -646,7 +646,7 @@ error NoClaimableAirdrop();
 1. 确认 ExtensionCenter 及其 Launch、Vote、Verify、Mint 等不可变地址正确。
 2. 确认范围代币已经完成发射，逐项核对社区配置只包含范围代币和本次支持的已完成发射直接子币。
 3. 确定并复核每个社区的权重。权重计算方法由部署者决定；例如可以采用最近七个完整轮次中，SL 所对应范围代币数量的中位数，但这只是示例，不属于合约规则。
-4. 核对 `startRound`、`roundCount`、派生 `endRound` 和整数 `quotaMultiplier`。
+4. 核对 `startRound`、`roundCount`、派生 `endRound` 和整数 `quotaMultiplier`；`START_ROUND` 必须在部署前确定为非负整数，不接受 `current`、`currentRound` 等动态别名。
 5. 核对所有受支持 Factory 的地址、代码和激励接口。
 6. 若配置同链空投代币，确认它不等于范围代币，并验证其代码、`balanceOf/transfer` 行为及无转账税、无 rebase 假设；只需要份额时传零地址。
 7. 运行合约自动化测试和 gas 报告；在目标链 fork 上按本次发布可构造的状态模拟部署、最坏批量、顺序领取和主要聚合 view，记录无法在当前轮次构造的项目及其替代证据。
