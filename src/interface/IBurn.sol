@@ -183,8 +183,16 @@ interface IBurn is IBurnEvents, IBurnErrors {
         external
         view
         returns (BurnStats memory);
+    function accountBurnStatsThroughRound(address account, address tokenAddress, uint256 round)
+        external
+        view
+        returns (BurnStats memory);
     function accountBurnStats(address account, address tokenAddress) external view returns (BurnStats memory);
     function communityRoundBurnStats(address tokenAddress, uint256 round) external view returns (BurnStats memory);
+    function communityBurnStatsThroughRound(address tokenAddress, uint256 round)
+        external
+        view
+        returns (BurnStats memory);
     function communityBurnStats(address tokenAddress) external view returns (BurnStats memory);
     function accountTokenShare(address account, address tokenAddress) external view returns (TokenShare memory);
     function accountShare(address account) external view returns (uint256 share, bool finalized);

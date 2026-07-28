@@ -208,6 +208,123 @@ contract BurnTest is Test {
         assertEq(burn.participants(2, 10).length, 0);
     }
 
+    function test_BurnStatsThroughRoundUsesSparseCumulativeCheckpoints() public {
+        scopeSL.mint(alice, 6 ether);
+        scopeSL.mint(bob, 3 ether);
+        scopeST.mint(alice, 4 ether);
+
+        vm.startPrank(alice);
+        scopeSL.approve(address(burn), type(uint256).max);
+        scopeST.approve(address(burn), type(uint256).max);
+        verify.setCurrentRound(6);
+        burn.lockSLToken(address(scopeToken), 5, 1 ether);
+        burn.lockSLToken(address(scopeToken), 5, 1 ether);
+        vm.stopPrank();
+
+        verify.setCurrentRound(7);
+        vm.prank(bob);
+        scopeSL.approve(address(burn), type(uint256).max);
+        vm.prank(bob);
+        burn.lockSLToken(address(scopeToken), 6, 3 ether);
+        vm.prank(alice);
+        burn.lockSTToken(address(scopeToken), 6, 4 ether);
+
+        verify.setCurrentRound(8);
+        vm.prank(alice);
+        burn.lockSLToken(address(scopeToken), 7, 4 ether);
+
+        BurnStats memory beforeActivity = burn.accountBurnStatsThroughRound(alice, address(scopeToken), 4);
+        assertEq(beforeActivity.slTokenLock.amount, 0);
+
+        BurnStats memory aliceRound5 = burn.accountBurnStatsThroughRound(alice, address(scopeToken), 5);
+        assertEq(aliceRound5.slTokenLock.amount, 2 ether);
+        assertEq(aliceRound5.slTokenLock.score, 2.072648 ether);
+        assertEq(aliceRound5.stTokenLock.amount, 0);
+        assertEq(aliceRound5.stTokenLock.score, 0);
+
+        BurnStats memory aliceRound6 = burn.accountBurnStatsThroughRound(alice, address(scopeToken), 6);
+        assertEq(aliceRound6.slTokenLock.amount, 2 ether);
+        assertEq(aliceRound6.slTokenLock.score, 2.072648 ether);
+        assertEq(aliceRound6.stTokenLock.amount, 4 ether);
+        assertEq(aliceRound6.stTokenLock.score, 4.072 ether);
+
+        BurnStats memory aliceRound7 = burn.accountBurnStatsThroughRound(alice, address(scopeToken), 7);
+        assertEq(aliceRound7.slTokenLock.amount, 6 ether);
+        assertEq(aliceRound7.slTokenLock.score, 6.072648 ether);
+        assertEq(aliceRound7.stTokenLock.amount, 4 ether);
+        assertEq(aliceRound7.stTokenLock.score, 4.072 ether);
+        assertEq(burn.accountBurnStatsThroughRound(alice, address(scopeToken), 100).slTokenLock.amount, 6 ether);
+
+        assertEq(burn.accountBurnStatsThroughRound(bob, address(scopeToken), 5).slTokenLock.amount, 0);
+        assertEq(burn.accountBurnStatsThroughRound(bob, address(scopeToken), 6).slTokenLock.amount, 3 ether);
+        assertEq(burn.accountBurnStatsThroughRound(bob, address(scopeToken), 6).slTokenLock.score, 3.054 ether);
+
+        BurnStats memory communityRound5 = burn.communityBurnStatsThroughRound(address(scopeToken), 5);
+        assertEq(communityRound5.slTokenLock.amount, 2 ether);
+        assertEq(communityRound5.slTokenLock.score, 2.072648 ether);
+        assertEq(communityRound5.stTokenLock.amount, 0);
+
+        BurnStats memory communityRound6 = burn.communityBurnStatsThroughRound(address(scopeToken), 6);
+        assertEq(communityRound6.slTokenLock.amount, 5 ether);
+        assertEq(communityRound6.slTokenLock.score, 5.126648 ether);
+        assertEq(communityRound6.stTokenLock.amount, 4 ether);
+        assertEq(communityRound6.stTokenLock.score, 4.072 ether);
+
+        BurnStats memory communityRound7 = burn.communityBurnStatsThroughRound(address(scopeToken), 7);
+        assertEq(communityRound7.slTokenLock.amount, 9 ether);
+        assertEq(communityRound7.slTokenLock.score, 9.126648 ether);
+        assertEq(communityRound7.stTokenLock.amount, 4 ether);
+        assertEq(communityRound7.stTokenLock.score, 4.072 ether);
+
+        assertEq(burn.accountRoundBurnStats(alice, address(scopeToken), 6).slTokenLock.amount, 0);
+        assertEq(burn.accountRoundBurnStats(alice, address(scopeToken), 6).stTokenLock.amount, 4 ether);
+    }
+
+    function test_BurnStatsThroughRoundStaysEfficientWith128Rounds() public {
+        uint256 rounds = 128;
+        Burn longBurn = new Burn(
+            address(center), address(scopeToken), address(0), _communityWeights(), 5, rounds, 5, new address[](0)
+        );
+        scopeSL.mint(alice, rounds * 1 ether);
+
+        uint256 earlyWriteGas;
+        uint256 lateWriteGas;
+        vm.startPrank(alice);
+        scopeSL.approve(address(longBurn), type(uint256).max);
+        for (uint256 i; i < rounds; ++i) {
+            uint256 round = 5 + i;
+            verify.setCurrentRound(round + 1);
+            uint256 gasBefore = gasleft();
+            longBurn.lockSLToken(address(scopeToken), round, 1 ether);
+            uint256 gasUsed = gasBefore - gasleft();
+            if (i == 1) earlyWriteGas = gasUsed;
+            if (i == rounds - 1) lateWriteGas = gasUsed;
+        }
+        vm.stopPrank();
+
+        uint256 accountGasBefore = gasleft();
+        BurnStats memory accountMid = longBurn.accountBurnStatsThroughRound(alice, address(scopeToken), 68);
+        uint256 accountQueryGas = accountGasBefore - gasleft();
+        assertEq(accountMid.slTokenLock.amount, 64 ether);
+
+        uint256 communityGasBefore = gasleft();
+        BurnStats memory communityMid = longBurn.communityBurnStatsThroughRound(address(scopeToken), 68);
+        uint256 communityQueryGas = communityGasBefore - gasleft();
+        assertEq(communityMid.slTokenLock.amount, 64 ether);
+
+        assertEq(longBurn.accountBurnStatsThroughRound(alice, address(scopeToken), 132).slTokenLock.amount, 128 ether);
+        assertEq(
+            longBurn.accountBurnStatsThroughRound(alice, address(scopeToken), 1_000_000).slTokenLock.amount, 128 ether
+        );
+        emit log_named_uint("checkpoint write gas at round 6", earlyWriteGas);
+        emit log_named_uint("checkpoint write gas at round 132", lateWriteGas);
+        emit log_named_uint("account cumulative query gas at 128 rounds", accountQueryGas);
+        emit log_named_uint("community cumulative query gas at 128 rounds", communityQueryGas);
+        assertLt(lateWriteGas, earlyWriteGas * 2, "checkpoint writes must remain O(1)");
+        assertLt(accountQueryGas, 100_000, "account checkpoint query is too expensive at 128 rounds");
+        assertLt(communityQueryGas, 100_000, "community checkpoint query is too expensive at 128 rounds");
+    }
+
     function test_DirectReceiptTransfersDoNotRecordBurnStatsOrParticipants() public {
         scopeSL.mint(alice, 10 ether);
         scopeST.mint(alice, 20 ether);

@@ -23,9 +23,11 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {ArrayUtils} from "@core/lib/ArrayUtils.sol";
 
 contract Burn is IBurn, ReentrancyGuard {
     using SafeERC20 for IERC20;
+    using ArrayUtils for uint256[];
 
     uint256 internal constant WAD = 1e18;
 
@@ -34,6 +36,18 @@ contract Burn is IBurn, ReentrancyGuard {
         STTokenLock,
         GovRewardBurn,
         ActionRewardBurn
+    }
+
+    struct CategoryStatsHistory {
+        uint256[] changeRounds;
+        mapping(uint256 => CategoryStats) statsByRound;
+    }
+
+    struct BurnStatsHistory {
+        CategoryStatsHistory slTokenLock;
+        CategoryStatsHistory stTokenLock;
+        CategoryStatsHistory govRewardBurn;
+        CategoryStatsHistory actionRewardBurn;
     }
 
     address public immutable override extensionCenter;
@@ -62,8 +76,10 @@ contract Burn is IBurn, ReentrancyGuard {
 
     mapping(address => mapping(address => mapping(uint256 => BurnStats))) internal _accountRoundBurnStats;
     mapping(address => mapping(address => BurnStats)) internal _accountBurnStats;
+    mapping(address => mapping(address => BurnStatsHistory)) internal _accountBurnStatsHistory;
     mapping(address => mapping(uint256 => BurnStats)) internal _communityRoundBurnStats;
     mapping(address => BurnStats) internal _communityBurnStats;
+    mapping(address => BurnStatsHistory) internal _communityBurnStatsHistory;
     mapping(address => mapping(address => mapping(uint256 => mapping(uint256 => uint256)))) internal _actionRewardBurned;
 
     address[] internal _participants;
@@ -394,6 +410,16 @@ contract Burn is IBurn, ReentrancyGuard {
         return _accountBurnStats[account][tokenAddress];
     }
 
+    function accountBurnStatsThroughRound(address account, address tokenAddress, uint256 round)
+        external
+        view
+        override
+        returns (BurnStats memory)
+    {
+        _requireCommunity(tokenAddress);
+        return _burnStatsThroughRound(_accountBurnStatsHistory[account][tokenAddress], round);
+    }
+
     function communityRoundBurnStats(address tokenAddress, uint256 round)
         external
         view
@@ -407,6 +433,16 @@ contract Burn is IBurn, ReentrancyGuard {
     function communityBurnStats(address tokenAddress) external view override returns (BurnStats memory) {
         _requireCommunity(tokenAddress);
         return _communityBurnStats[tokenAddress];
+    }
+
+    function communityBurnStatsThroughRound(address tokenAddress, uint256 round)
+        external
+        view
+        override
+        returns (BurnStats memory)
+    {
+        _requireCommunity(tokenAddress);
+        return _burnStatsThroughRound(_communityBurnStatsHistory[tokenAddress], round);
     }
 
     function participantsCount() external view override returns (uint256) {
@@ -660,20 +696,76 @@ contract Burn is IBurn, ReentrancyGuard {
         accountRound.score = newRoundScore;
 
         _increaseCategory(_communityRoundBurnStats[tokenAddress][round], category, amount, operationScore);
-        _increaseCategory(_accountBurnStats[account][tokenAddress], category, amount, operationScore);
-        _increaseCategory(_communityBurnStats[tokenAddress], category, amount, operationScore);
+        CategoryStats storage accountTotal =
+            _increaseCategory(_accountBurnStats[account][tokenAddress], category, amount, operationScore);
+        CategoryStats storage communityTotal =
+            _increaseCategory(_communityBurnStats[tokenAddress], category, amount, operationScore);
+        _recordCategoryStats(
+            _categoryHistory(_accountBurnStatsHistory[account][tokenAddress], category), round, accountTotal
+        );
+        _recordCategoryStats(
+            _categoryHistory(_communityBurnStatsHistory[tokenAddress], category), round, communityTotal
+        );
     }
 
-    function _increaseCategory(BurnStats storage stats, Category category, uint256 amount, uint256 score) internal {
-        CategoryStats storage value = _category(stats, category);
+    function _increaseCategory(BurnStats storage stats, Category category, uint256 amount, uint256 score)
+        internal
+        returns (CategoryStats storage value)
+    {
+        value = _category(stats, category);
         value.amount += amount;
         value.score += score;
+    }
+
+    function _recordCategoryStats(CategoryStatsHistory storage history, uint256 round, CategoryStats storage total)
+        internal
+    {
+        uint256 length = history.changeRounds.length;
+        if (length == 0 || round > history.changeRounds[length - 1]) {
+            history.changeRounds.push(round);
+        } else {
+            assert(round == history.changeRounds[length - 1]);
+        }
+        CategoryStats storage checkpoint = history.statsByRound[round];
+        checkpoint.amount = total.amount;
+        checkpoint.score = total.score;
+    }
+
+    function _burnStatsThroughRound(BurnStatsHistory storage history, uint256 round)
+        internal
+        view
+        returns (BurnStats memory stats)
+    {
+        stats.slTokenLock = _categoryStatsThroughRound(history.slTokenLock, round);
+        stats.stTokenLock = _categoryStatsThroughRound(history.stTokenLock, round);
+        stats.govRewardBurn = _categoryStatsThroughRound(history.govRewardBurn, round);
+        stats.actionRewardBurn = _categoryStatsThroughRound(history.actionRewardBurn, round);
+    }
+
+    function _categoryStatsThroughRound(CategoryStatsHistory storage history, uint256 round)
+        internal
+        view
+        returns (CategoryStats memory)
+    {
+        (bool found, uint256 checkpointRound) = history.changeRounds.findLeftNearestOrEqualValue(round);
+        return found ? history.statsByRound[checkpointRound] : CategoryStats(0, 0);
     }
 
     function _category(BurnStats storage stats, Category category)
         internal
         view
         returns (CategoryStats storage value)
+    {
+        if (category == Category.SLTokenLock) return stats.slTokenLock;
+        if (category == Category.STTokenLock) return stats.stTokenLock;
+        if (category == Category.GovRewardBurn) return stats.govRewardBurn;
+        return stats.actionRewardBurn;
+    }
+
+    function _categoryHistory(BurnStatsHistory storage stats, Category category)
+        internal
+        view
+        returns (CategoryStatsHistory storage value)
     {
         if (category == Category.SLTokenLock) return stats.slTokenLock;
         if (category == Category.STTokenLock) return stats.stTokenLock;

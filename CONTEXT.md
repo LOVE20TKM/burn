@@ -69,7 +69,7 @@ _Avoid_: 范围代币、固定空投池
 _Avoid_: 空投快照、固定个人额度、领取后补发
 
 **销毁历史**：
-由 `SLTokenLocked`、`STTokenLocked`、`GovRewardTokenBurned` 和 `ActionRewardTokenBurned` 事件组成的逐笔不可逆记录；合约状态只保存当前资格和累计值。
+由 `SLTokenLocked`、`STTokenLocked`、`GovRewardTokenBurned` 和 `ActionRewardTokenBurned` 事件组成的逐笔不可逆记录；合约状态保存当前资格、全周期累计值和稀疏的截至轮次累计检查点，不保存逐笔历史数组。
 _Avoid_: 链上历史数组、重复存储
 
 **累计销毁数据**：

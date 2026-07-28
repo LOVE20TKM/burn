@@ -415,6 +415,12 @@ function accountRoundBurnStats(
     uint256 round
 ) external view returns (BurnStats memory);
 
+function accountBurnStatsThroughRound(
+    address account,
+    address tokenAddress,
+    uint256 round
+) external view returns (BurnStats memory);
+
 function accountBurnStats(
     address account,
     address tokenAddress
@@ -425,12 +431,19 @@ function communityRoundBurnStats(
     uint256 round
 ) external view returns (BurnStats memory);
 
+function communityBurnStatsThroughRound(
+    address tokenAddress,
+    uint256 round
+) external view returns (BurnStats memory);
+
 function communityBurnStats(
     address tokenAddress
 ) external view returns (BurnStats memory);
 ```
 
-四类资产单位不同，不提供跨类别 `amount` 合计。
+`accountRoundBurnStats` 和 `communityRoundBurnStats` 返回指定单轮值；`accountBurnStatsThroughRound` 和 `communityBurnStatsThroughRound` 返回截至指定轮次的累计值；不带轮次的 `accountBurnStats` 和 `communityBurnStats` 返回全周期累计值。
+
+截至轮次累计按地址、社区和类别保存稀疏检查点，只记录发生变化的轮次。同轮操作更新最后一个检查点，跨轮操作追加检查点，写入复杂度为 `O(1)`；读取由合约二分查找不晚于目标轮次的最后检查点，复杂度为 `O(log k)`，`k` 为该地址或社区在该类别发生变化的轮次数。目标轮次早于首个检查点时返回零，晚于最后检查点时返回最新累计值。四类资产单位不同，不提供跨类别 `amount` 合计。
 
 ### 9.4 份额查询
 
@@ -671,11 +684,11 @@ error NoClaimableAirdrop();
 
 ## 14. 前端与空投准备
 
-- 前端以选中的 `round` 为统一参数，通过批量读取同时调用 `isRoundOpen`、`scoreMultiplier`、`govRewardBurnState`、`accountRoundBurnStats` 和 `accountBurnStats`。
+- 前端以选中的 `round` 为统一参数，分别调用 `isRoundOpen`、`scoreMultiplier`、`govRewardBurnState`、`accountBurnStatsThroughRound` 和 `communityBurnStatsThroughRound`；不得按轮次循环读取后临时求和。
 - 社区代币、SL、ST 的钱包余额和对 Burn 的 allowance 直接调用各 ERC20 的 `balanceOf/allowance`，Burn 不代理标准代币查询。SL/ST 标准交互默认提交当前全部余额，不提供减少数量控件；合约接口仍允许任意正数。
 - 社区历史累计永久锁定量直接读取 `SLToken.balanceOf(tokenAddress)` 和 `STToken.balanceOf(tokenAddress)`；本次空投获得计分的锁定量读取 Burn 累计状态和事件，前端必须用不同标签展示。
 - 行动区域按需调用 `actionRewardBurnStates(account, token, round)`，用返回值构建批量销毁参数；该动态查询失败时不应阻塞 SL、ST 和治理区域。
-- `accountRoundBurnStats` 展示指定轮次四类已锁定或销毁数量与得分，`accountBurnStats` 展示全周期累计；历史页面另按地址、社区和轮次查询四种事件。
+- `accountRoundBurnStats` 展示指定单轮四类已锁定或销毁数量与得分，`accountBurnStatsThroughRound` 展示截至指定轮次累计，`accountBurnStats` 展示全周期累计；社区查询使用对应的三个 `community` 函数，历史页面另按地址、社区和轮次查询四种事件。
 - 所有写交易携带页面选中的 `round`；发送前仍由 Burn 校验该轮是否开放，避免跨轮延迟交易按新轮次执行。
 - `airdropTokenAddress == address(0)` 时，外部空投程序分页读取参与地址，并要求 `accountShare(account).finalized == true`；接收资格和具体数量由该外部流程决定。
 - 配置同链空投代币时，前端通过 `accountAirdropState` 展示是否可领取、领取时使用的最终份额、当前可领取数量和已经领取数量。领取前的数量会随其他领取及后续转入变化，必须标注为“当前可领取”。
@@ -695,7 +708,7 @@ error NoClaimableAirdrop();
 8. 基础与扩展行动互斥，受支持 Factory 后续扩展可用，非受支持扩展不被调用。
 9. 行动批次混合社区、重复来源、零数量和中途失败的全量回滚行为正确；所有写入口传入过期、未来或交易执行时已切换的 `round` 均回滚。
 10. 活跃类别和活跃社区重新归一化、全局无人参与、所有舍入余量处理正确。
-11. 四种事件字段、指定轮次与全周期累计值、参与地址去重、`limit == 0` 及分页边界正确。
+11. 四种事件字段、指定单轮、截止轮次与全周期累计值、参与地址去重、`limit == 0` 及分页边界正确；百轮连续检查点下写入保持 `O(1)`，截止轮次查询保持 `O(log k)` 并低于测试 gas 上限。
 12. 单地址四类明细之和等于 `accountTokenShare.total`，跨社区之和等于 `accountShare.share`，所有地址份额之和允许因向下取整小于 `1e18`。
 13. 零空投代币地址模式只提供份额且所有领取调用回滚；空投代币等于范围代币时部署回滚；同链模式只允许最终份额为正的地址成功领取一次。
 14. 同链空投按当前余额和剩余份额计算：固定余额下不同领取顺序只产生少量最小计量单位差异，领取中新增余额只分给尚未领取地址，全部地址领取后新增余额及份额舍入对应余额无法领取。
