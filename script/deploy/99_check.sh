@@ -12,6 +12,8 @@ fi
 
 failed=0
 check_equal "extensionCenter" "$EXTENSION_CENTER" "$(cast_call "$burnAddress" "extensionCenter()(address)")" || ((failed++))
+actual_scope_symbol=$(cast_call "$burnAddress" "scopeTokenSymbol()(string)" | tr -d '"')
+check_equal "scopeTokenSymbol" "$SCOPE_TOKEN_SYMBOL" "$actual_scope_symbol" || ((failed++))
 check_equal "scopeTokenAddress" "$SCOPE_TOKEN" "$(cast_call "$burnAddress" "scopeTokenAddress()(address)")" || ((failed++))
 check_equal "airdropTokenAddress" "${AIRDROP_TOKEN:-0x0000000000000000000000000000000000000000}" "$(cast_call "$burnAddress" "airdropTokenAddress()(address)")" || ((failed++))
 check_equal "roundCount" "$ROUND_COUNT" "$(cast_call "$burnAddress" "roundCount()(uint256)")" || ((failed++))
@@ -24,11 +26,13 @@ expected_end=$((START_ROUND + ROUND_COUNT - 1))
 check_equal "endRound" "$expected_end" "$(cast_call "$burnAddress" "endRound()(uint256)")" || ((failed++))
 
 normalize_array() {
-    printf '%s' "$1" | tr -d '[][:space:]' | tr '[:upper:]' '[:lower:]'
+    printf '%s' "$1" | tr -d '[]"[:space:]' | tr '[:upper:]' '[:lower:]'
 }
 
 actual_communities=$(normalize_array "$(cast_call "$burnAddress" "communities()(address[])")")
 check_equal "communities" "$COMMUNITY_TOKENS" "$actual_communities" || ((failed++))
+actual_symbols=$(normalize_array "$(cast_call "$burnAddress" "communitySymbols()(string[])")")
+check_equal "communitySymbols" "$COMMUNITY_SYMBOLS" "$actual_symbols" || ((failed++))
 
 tokens="$COMMUNITY_TOKENS,"
 weights="$COMMUNITY_WEIGHTS,"

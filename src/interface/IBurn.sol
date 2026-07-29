@@ -2,7 +2,7 @@
 pragma solidity =0.8.17;
 
 struct CommunityWeight {
-    address tokenAddress;
+    string tokenSymbol;
     uint256 weight;
 }
 
@@ -61,6 +61,7 @@ struct AirdropState {
 interface IBurnEvents {
     event CommunityConfigFrozen(
         address indexed tokenAddress,
+        string tokenSymbol,
         uint256 weight,
         uint256 scoreBase,
         uint256 totalSupply,
@@ -124,14 +125,14 @@ interface IBurnErrors {
     error ZeroAddress();
     error ZeroAmount();
     error EmptyBatch();
-    error InvalidScopeToken(address tokenAddress);
+    error InvalidScopeToken(string tokenSymbol);
     error InvalidAirdropToken(address tokenAddress);
     error InvalidRoundCount();
     error InvalidQuotaMultiplier();
     error StartRoundTooEarly(uint256 currentVerifyRound, uint256 startRound);
     error DuplicateExtensionFactory(address factory);
-    error InvalidCommunityConfig(address tokenAddress);
-    error DuplicateCommunity(address tokenAddress);
+    error InvalidCommunityConfig(string tokenSymbol);
+    error DuplicateCommunity(string tokenSymbol);
     error MissingScopeCommunity();
     error InvalidScoreBase(address tokenAddress);
     error UnsupportedCommunity(address tokenAddress);
@@ -147,6 +148,7 @@ interface IBurnErrors {
 
 interface IBurn is IBurnEvents, IBurnErrors {
     function extensionCenter() external view returns (address);
+    function scopeTokenSymbol() external view returns (string memory);
     function scopeTokenAddress() external view returns (address);
     function airdropTokenAddress() external view returns (address);
     function startRound() external view returns (uint256);
@@ -157,6 +159,7 @@ interface IBurn is IBurnEvents, IBurnErrors {
     function remainingAirdropShare() external view returns (uint256);
 
     function communities() external view returns (address[] memory);
+    function communitySymbols() external view returns (string[] memory);
     function communityWeight(address tokenAddress) external view returns (uint256);
     function scoreBase(address tokenAddress) external view returns (uint256);
     function supportedExtensionFactories() external view returns (address[] memory);

@@ -38,6 +38,22 @@ assert_fails_with() {
     printf 'ok - %s\n' "$name"
 }
 
+assert_succeeds() {
+    local name=$1
+    shift
+    local output
+    local status
+
+    output=$("$@" 2>&1)
+    status=$?
+    if [ "$status" -ne 0 ]; then
+        printf 'not ok - %s (status=%s, output=%s)\n' "$name" "$status" "$output"
+        failures=$((failures + 1))
+        return
+    fi
+    printf 'ok - %s\n' "$name"
+}
+
 invalid_start_round() (
     set +u
     cd "$REPO_ROOT" || exit 1
@@ -51,8 +67,8 @@ invalid_start_round() (
         'CHAIN_ID=31337' >"$network_path/network.params"
     printf '%s\n' \
         'EXTENSION_CENTER=0x1111111111111111111111111111111111111111' \
-        'SCOPE_TOKEN=0x2222222222222222222222222222222222222222' \
-        'COMMUNITY_TOKENS=0x2222222222222222222222222222222222222222' \
+        'SCOPE_TOKEN_SYMBOL=FIRST' \
+        'COMMUNITY_SYMBOLS=FIRST' \
         'COMMUNITY_WEIGHTS=1' \
         'START_ROUND=current' \
         'ROUND_COUNT=3' \
@@ -64,6 +80,79 @@ invalid_start_round() (
         fi
         return 1
     }
+    source script/deploy/00_init.sh "$network_name"
+)
+
+resolve_symbols() (
+    set +u
+    cd "$REPO_ROOT" || exit 1
+    local network_name="resolve_symbols_$$"
+    local network_path="$REPO_ROOT/script/network/$network_name"
+    mkdir -p "$network_path"
+    trap "rm -rf '$network_path'" EXIT
+    printf '%s\n' \
+        'KEYSTORE_ACCOUNT=deployer' \
+        'ACCOUNT_ADDRESS=0x3333333333333333333333333333333333333333' >"$network_path/.account"
+    printf '%s\n' 'RPC_URL=http://mock' 'CHAIN_ID=70001' >"$network_path/network.params"
+    printf '%s\n' \
+        'EXTENSION_CENTER=0x1111111111111111111111111111111111111111' \
+        'SCOPE_TOKEN_SYMBOL=FIRST' \
+        'COMMUNITY_SYMBOLS=FIRST,CHILD' \
+        'COMMUNITY_WEIGHTS=100,200' \
+        'START_ROUND=1' \
+        'ROUND_COUNT=3' \
+        'QUOTA_MULTIPLIER=5' >"$network_path/burn.params"
+
+    cast() {
+        if [ "$1" = "chain-id" ]; then printf '70001\n'; return; fi
+        local address=$2
+        local signature=$3
+        local argument=${4:-}
+        case "$address:$signature:$argument" in
+            0x1111111111111111111111111111111111111111:launchAddress\(\)\(address\):--rpc-url) printf '0x2222222222222222222222222222222222222222\n' ;;
+            0x2222222222222222222222222222222222222222:tokenAddressBySymbol\(string\)\(address\):FIRST) printf '0x4444444444444444444444444444444444444444\n' ;;
+            0x2222222222222222222222222222222222222222:tokenAddressBySymbol\(string\)\(address\):CHILD) printf '0x5555555555555555555555555555555555555555\n' ;;
+            0x2222222222222222222222222222222222222222:isLOVE20Token\(address\)\(bool\):0x4444444444444444444444444444444444444444) printf 'true\n' ;;
+            0x2222222222222222222222222222222222222222:isLOVE20Token\(address\)\(bool\):0x5555555555555555555555555555555555555555) printf 'true\n' ;;
+            *) return 1 ;;
+        esac
+    }
+
+    KEYSTORE_PASSWORD=secret
+    KEYSTORE_PASSWORD_ACCOUNT=deployer
+    source script/deploy/00_init.sh "$network_name" || exit 1
+    [ "$SCOPE_TOKEN" = 0x4444444444444444444444444444444444444444 ]
+    [ "$COMMUNITY_TOKENS" = 0x4444444444444444444444444444444444444444,0x5555555555555555555555555555555555555555 ]
+)
+
+reject_unknown_symbol() (
+    set +u
+    cd "$REPO_ROOT" || exit 1
+    local network_name="reject_unknown_symbol_$$"
+    local network_path="$REPO_ROOT/script/network/$network_name"
+    mkdir -p "$network_path"
+    trap "rm -rf '$network_path'" EXIT
+    : >"$network_path/.account"
+    printf '%s\n' 'RPC_URL=http://mock' 'CHAIN_ID=70001' >"$network_path/network.params"
+    printf '%s\n' \
+        'EXTENSION_CENTER=0x1111111111111111111111111111111111111111' \
+        'SCOPE_TOKEN_SYMBOL=UNKNOWN' \
+        'COMMUNITY_SYMBOLS=UNKNOWN' \
+        'COMMUNITY_WEIGHTS=1' \
+        'START_ROUND=1' \
+        'ROUND_COUNT=3' \
+        'QUOTA_MULTIPLIER=5' >"$network_path/burn.params"
+
+    cast() {
+        if [ "$1" = "chain-id" ]; then printf '70001\n'; return; fi
+        case "$2:$3" in
+            0x1111111111111111111111111111111111111111:launchAddress\(\)\(address\)) printf '0x2222222222222222222222222222222222222222\n' ;;
+            0x2222222222222222222222222222222222222222:tokenAddressBySymbol\(string\)\(address\)) printf '0x0000000000000000000000000000000000000000\n' ;;
+            0x2222222222222222222222222222222222222222:isLOVE20Token\(address\)\(bool\)) printf 'false\n' ;;
+            *) return 1 ;;
+        esac
+    }
+
     source script/deploy/00_init.sh "$network_name"
 )
 
@@ -103,10 +192,63 @@ deploy_stale_address() (
     source script/deploy/01_deploy_burn.sh
 )
 
+prepare_config() (
+    set +u
+    cd "$REPO_ROOT" || exit 1
+    local network_name="prepare_config_$$"
+    local network_path="$REPO_ROOT/script/network/$network_name"
+    mkdir -p "$network_path"
+    trap "rm -rf '$network_path'" EXIT
+    printf '%s\n' 'RPC_URL=http://mock' 'CHAIN_ID=70001' >"$network_path/network.params"
+    printf '%s\n' \
+        'EXTENSION_CENTER=0x1111111111111111111111111111111111111111' \
+        'SCOPE_TOKEN_SYMBOL=' \
+        'COMMUNITY_SYMBOLS=' \
+        'COMMUNITY_WEIGHTS=' \
+        'START_ROUND=' \
+        'ROUND_COUNT=' \
+        'QUOTA_MULTIPLIER=' >"$network_path/burn.params"
+
+    cast() {
+        if [ "$1" = "chain-id" ]; then printf '70001\n'; return; fi
+        local address=$2
+        local signature=$3
+        local argument=${4:-}
+        [ "$argument" = "--rpc-url" ] && argument=
+        case "$address:$signature:$argument" in
+            0x1111111111111111111111111111111111111111:launchAddress\(\)\(address\):) printf '0x2222222222222222222222222222222222222222\n' ;;
+            0x2222222222222222222222222222222222222222:launchedTokensCount\(\)\(uint256\):) printf '2\n' ;;
+            0x2222222222222222222222222222222222222222:launchedTokensAtIndex\(uint256\)\(address\):0) printf '0x4444444444444444444444444444444444444444\n' ;;
+            0x2222222222222222222222222222222222222222:launchedTokensAtIndex\(uint256\)\(address\):1) printf '0x5555555555555555555555555555555555555555\n' ;;
+            0x4444444444444444444444444444444444444444:symbol\(\)\(string\):) printf '"FIRST"\n' ;;
+            0x5555555555555555555555555555555555555555:symbol\(\)\(string\):) printf '"CHILD"\n' ;;
+            0x4444444444444444444444444444444444444444:parentTokenAddress\(\)\(address\):) printf '0x7777777777777777777777777777777777777777\n' ;;
+            0x5555555555555555555555555555555555555555:parentTokenAddress\(\)\(address\):) printf '0x4444444444444444444444444444444444444444\n' ;;
+            0x4444444444444444444444444444444444444444:slAddress\(\)\(address\):) printf '0x8888888888888888888888888888888888888888\n' ;;
+            0x5555555555555555555555555555555555555555:slAddress\(\)\(address\):) printf '0x9999999999999999999999999999999999999999\n' ;;
+            0x8888888888888888888888888888888888888888:tokenAmounts\(\)\(uint256,uint256,uint256,uint256\):) printf '100\n10\n0\n0\n' ;;
+            0x9999999999999999999999999999999999999999:tokenAmounts\(\)\(uint256,uint256,uint256,uint256\):) printf '20\n200\n0\n0\n' ;;
+            *) return 1 ;;
+        esac
+    }
+
+    local output
+    output=$(source script/deploy/00_prepare_config.sh "$network_name") || exit 1
+    [[ "$output" == *'SCOPE_TOKEN_SYMBOL=FIRST'* ]] || exit 1
+    [[ "$output" == *'COMMUNITY_SYMBOLS=FIRST,CHILD'* ]] || exit 1
+    [[ "$output" == *'COMMUNITY_WEIGHTS=100,200'* ]] || exit 1
+    [ ! -e "$network_path/burn.proposed.params" ]
+)
+
 assert_fails_with \
     '00_init rejects dynamic start round' \
     'START_ROUND must be an explicit non-negative integer' \
     invalid_start_round
+assert_succeeds '00_init resolves Launch token symbols' resolve_symbols
+assert_fails_with \
+    '00_init rejects symbols not issued by Launch' \
+    'UNKNOWN is not a token issued by Launch' \
+    reject_unknown_symbol
 assert_fails_with \
     '01_deploy_burn rejects missing address file' \
     'Failed to read address.burn.params' \
@@ -123,6 +265,7 @@ assert_fails_with \
     '01_deploy_burn rejects stale burn address' \
     'burnAddress is empty after deploy' \
     deploy_stale_address
+assert_succeeds '00_prepare_config generates first-token weights' prepare_config
 
 if [ "$failures" -ne 0 ]; then
     exit 1

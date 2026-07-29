@@ -34,7 +34,8 @@ if [ ! -f "$network_dir/network.params" ] || [ ! -f "$network_dir/burn.params" ]
     return 1 2>/dev/null || exit 1
 fi
 
-unset EXTENSION_CENTER SCOPE_TOKEN AIRDROP_TOKEN COMMUNITY_TOKENS COMMUNITY_WEIGHTS
+unset EXTENSION_CENTER SCOPE_TOKEN_SYMBOL AIRDROP_TOKEN COMMUNITY_SYMBOLS COMMUNITY_WEIGHTS
+unset SCOPE_TOKEN COMMUNITY_TOKENS
 unset START_ROUND ROUND_COUNT QUOTA_MULTIPLIER SUPPORTED_EXTENSION_FACTORIES
 
 set -a
@@ -49,7 +50,7 @@ if [ -z "$RPC_URL" ] || [ -z "$CHAIN_ID" ] || [ "$actual_chain_id" != "$CHAIN_ID
     return 1 2>/dev/null || exit 1
 fi
 
-for name in EXTENSION_CENTER SCOPE_TOKEN COMMUNITY_TOKENS COMMUNITY_WEIGHTS START_ROUND ROUND_COUNT QUOTA_MULTIPLIER; do
+for name in EXTENSION_CENTER SCOPE_TOKEN_SYMBOL COMMUNITY_SYMBOLS COMMUNITY_WEIGHTS START_ROUND ROUND_COUNT QUOTA_MULTIPLIER; do
     if [ -z "$(printenv "$name")" ]; then
         echo -e "\033[31mError:\033[0m $name is required in burn.params"
         return 1 2>/dev/null || exit 1
@@ -61,12 +62,47 @@ if [[ ! "$START_ROUND" =~ ^[0-9]+$ ]]; then
     return 1 2>/dev/null || exit 1
 fi
 
-token_count=$(printf '%s' "$COMMUNITY_TOKENS" | awk -F, '{print NF}')
+symbol_count=$(printf '%s' "$COMMUNITY_SYMBOLS" | awk -F, '{print NF}')
 weight_count=$(printf '%s' "$COMMUNITY_WEIGHTS" | awk -F, '{print NF}')
-if [ "$token_count" != "$weight_count" ]; then
-    echo -e "\033[31mError:\033[0m COMMUNITY_TOKENS and COMMUNITY_WEIGHTS length mismatch"
+if [ "$symbol_count" != "$weight_count" ]; then
+    echo -e "\033[31mError:\033[0m COMMUNITY_SYMBOLS and COMMUNITY_WEIGHTS length mismatch"
     return 1 2>/dev/null || exit 1
 fi
+
+cast_call() {
+    local address=$1
+    local signature=$2
+    shift 2
+    cast call "$address" "$signature" "$@" --rpc-url "$RPC_URL"
+}
+
+launch_address=$(cast_call "$EXTENSION_CENTER" "launchAddress()(address)") \
+    || return 1 2>/dev/null || exit 1
+
+resolve_community_symbol() {
+    local symbol=$1
+    local token
+    local is_love20_token
+    token=$(cast_call "$launch_address" "tokenAddressBySymbol(string)(address)" "$symbol") || return 1
+    is_love20_token=$(cast_call "$launch_address" "isLOVE20Token(address)(bool)" "$token") || return 1
+    if [ "$token" = "0x0000000000000000000000000000000000000000" ] || [ "$is_love20_token" != "true" ]; then
+        echo -e "\033[31mError:\033[0m $symbol is not a token issued by Launch" >&2
+        return 1
+    fi
+    printf '%s' "$token"
+}
+
+SCOPE_TOKEN=$(resolve_community_symbol "$SCOPE_TOKEN_SYMBOL") \
+    || return 1 2>/dev/null || exit 1
+COMMUNITY_TOKENS=
+symbols="$COMMUNITY_SYMBOLS,"
+while [ -n "$symbols" ]; do
+    symbol="${symbols%%,*}"
+    symbols="${symbols#*,}"
+    token=$(resolve_community_symbol "$symbol") || return 1 2>/dev/null || exit 1
+    COMMUNITY_TOKENS="${COMMUNITY_TOKENS:+$COMMUNITY_TOKENS,}$token"
+done
+export SCOPE_TOKEN COMMUNITY_TOKENS
 
 request_keystore_password() {
     if [ -n "$KEYSTORE_PASSWORD" ] && [ "$KEYSTORE_PASSWORD_ACCOUNT" = "$KEYSTORE_ACCOUNT" ]; then
@@ -105,13 +141,6 @@ if [ "$network" = "anvil" ]; then
 else
     request_keystore_password || return 1 2>/dev/null || exit 1
 fi
-
-cast_call() {
-    local address=$1
-    local signature=$2
-    shift 2
-    cast call "$address" "$signature" "$@" --rpc-url "$RPC_URL"
-}
 
 normalize_value() {
     printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^([0-9]+)[[:space:]]+\[[^]]+\]$/\1/'

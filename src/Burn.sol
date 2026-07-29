@@ -51,6 +51,7 @@ contract Burn is IBurn, ReentrancyGuard {
     }
 
     address public immutable override extensionCenter;
+    string public override scopeTokenSymbol;
     address public immutable override scopeTokenAddress;
     address public immutable override airdropTokenAddress;
     uint256 public immutable override startRound;
@@ -68,6 +69,7 @@ contract Burn is IBurn, ReentrancyGuard {
     IExtensionCenter internal immutable _center;
 
     address[] internal _communities;
+    string[] internal _communitySymbols;
     mapping(address => uint256) internal _communityWeight;
     mapping(address => uint256) internal _scoreBase;
 
@@ -88,7 +90,7 @@ contract Burn is IBurn, ReentrancyGuard {
 
     constructor(
         address extensionCenterAddress,
-        address scopeTokenAddress_,
+        string memory scopeTokenSymbol_,
         address airdropTokenAddress_,
         CommunityWeight[] memory communityWeights,
         uint256 startRound_,
@@ -96,15 +98,7 @@ contract Burn is IBurn, ReentrancyGuard {
         uint256 quotaMultiplier_,
         address[] memory supportedExtensionFactories_
     ) {
-        if (extensionCenterAddress == address(0) || scopeTokenAddress_ == address(0)) {
-            revert ZeroAddress();
-        }
-        if (
-            airdropTokenAddress_ != address(0)
-                && (airdropTokenAddress_ == scopeTokenAddress_ || airdropTokenAddress_.code.length == 0)
-        ) {
-            revert InvalidAirdropToken(airdropTokenAddress_);
-        }
+        if (extensionCenterAddress == address(0)) revert ZeroAddress();
         if (roundCount_ == 0) revert InvalidRoundCount();
         if (quotaMultiplier_ == 0) revert InvalidQuotaMultiplier();
 
@@ -113,16 +107,23 @@ contract Burn is IBurn, ReentrancyGuard {
         ILOVE20Mint mint = ILOVE20Mint(center.mintAddress());
         ILOVE20Verify verify = ILOVE20Verify(center.verifyAddress());
         ILOVE20Vote vote = ILOVE20Vote(center.voteAddress());
+        address scopeTokenAddress_ = launch.tokenAddressBySymbol(scopeTokenSymbol_);
+        if (!_isEndedLOVE20Token(launch, scopeTokenAddress_)) {
+            revert InvalidScopeToken(scopeTokenSymbol_);
+        }
+        if (
+            airdropTokenAddress_ != address(0)
+                && (airdropTokenAddress_ == scopeTokenAddress_ || airdropTokenAddress_.code.length == 0)
+        ) {
+            revert InvalidAirdropToken(airdropTokenAddress_);
+        }
         uint256 currentVerifyRound = verify.currentRound();
         if (startRound_ < currentVerifyRound) {
             revert StartRoundTooEarly(currentVerifyRound, startRound_);
         }
 
-        if (!_isEndedLOVE20Token(launch, scopeTokenAddress_)) {
-            revert InvalidScopeToken(scopeTokenAddress_);
-        }
-
         extensionCenter = extensionCenterAddress;
+        scopeTokenSymbol = scopeTokenSymbol_;
         scopeTokenAddress = scopeTokenAddress_;
         airdropTokenAddress = airdropTokenAddress_;
         startRound = startRound_;
@@ -145,12 +146,12 @@ contract Burn is IBurn, ReentrancyGuard {
         uint256 communityCount = communityWeights.length;
         for (uint256 i; i < communityCount;) {
             CommunityWeight memory config = communityWeights[i];
-            address tokenAddress = config.tokenAddress;
+            address tokenAddress = _launch.tokenAddressBySymbol(config.tokenSymbol);
             if (tokenAddress == address(0) || config.weight == 0) {
-                revert InvalidCommunityConfig(tokenAddress);
+                revert InvalidCommunityConfig(config.tokenSymbol);
             }
             if (_communityWeight[tokenAddress] != 0) {
-                revert DuplicateCommunity(tokenAddress);
+                revert DuplicateCommunity(config.tokenSymbol);
             }
             if (tokenAddress == scopeTokenAddress_) {
                 scopeCommunityFound = true;
@@ -160,7 +161,7 @@ contract Burn is IBurn, ReentrancyGuard {
                     !_launch.isLOVE20Token(tokenAddress) || !info.hasEnded
                         || info.parentTokenAddress != scopeTokenAddress_
                 ) {
-                    revert InvalidCommunityConfig(tokenAddress);
+                    revert InvalidCommunityConfig(config.tokenSymbol);
                 }
             }
 
@@ -174,11 +175,14 @@ contract Burn is IBurn, ReentrancyGuard {
             uint256 scoreBase_ = WAD + Math.mulDiv(deploymentRoundReward, WAD, totalSupply);
 
             _communities.push(tokenAddress);
+            _communitySymbols.push(config.tokenSymbol);
             _communityWeight[tokenAddress] = config.weight;
             _scoreBase[tokenAddress] = scoreBase_;
             totalCommunityWeight += config.weight;
 
-            emit CommunityConfigFrozen(tokenAddress, config.weight, scoreBase_, totalSupply, deploymentRoundReward);
+            emit CommunityConfigFrozen(
+                tokenAddress, config.tokenSymbol, config.weight, scoreBase_, totalSupply, deploymentRoundReward
+            );
             unchecked {
                 ++i;
             }
@@ -205,6 +209,10 @@ contract Burn is IBurn, ReentrancyGuard {
 
     function communities() external view override returns (address[] memory) {
         return _communities;
+    }
+
+    function communitySymbols() external view override returns (string[] memory) {
+        return _communitySymbols;
     }
 
     function communityWeight(address tokenAddress) external view override returns (uint256) {

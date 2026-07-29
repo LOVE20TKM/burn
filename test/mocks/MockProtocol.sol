@@ -2,6 +2,7 @@
 pragma solidity =0.8.17;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {LaunchInfo} from "@core/interfaces/ILOVE20Launch.sol";
 
 contract MockERC20 is ERC20 {
@@ -89,10 +90,12 @@ contract MockLOVE20Token is ERC20 {
 
 contract MockLaunch {
     mapping(address => bool) public isLOVE20Token;
+    mapping(string => address) public tokenAddressBySymbol;
     mapping(address => LaunchInfo) internal _launchInfo;
 
     function setToken(address token, address parent, bool hasEnded) external {
         isLOVE20Token[token] = true;
+        tokenAddressBySymbol[IERC20Metadata(token).symbol()] = token;
         _launchInfo[token].parentTokenAddress = parent;
         _launchInfo[token].hasEnded = hasEnded;
     }

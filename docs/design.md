@@ -31,13 +31,13 @@ Burn 明确不做：
 
 ```solidity
 struct CommunityWeight {
-    address tokenAddress;
+    string tokenSymbol;
     uint256 weight;
 }
 
 constructor(
     address extensionCenterAddress,
-    address scopeTokenAddress,
+    string memory scopeTokenSymbol,
     address airdropTokenAddress,
     CommunityWeight[] memory communityWeights,
     uint256 startRound,
@@ -49,11 +49,11 @@ constructor(
 
 构造参数规则：
 
-- `extensionCenterAddress` 和 `scopeTokenAddress` 不得为零地址。
-- `scopeTokenAddress` 必须是该 ExtensionCenter 对应 Launch 已经完成发射的 LOVE20Token。
+- `extensionCenterAddress` 不得为零地址。
+- `scopeTokenSymbol` 必须由该 ExtensionCenter 对应 Launch 映射到已经完成发射的 LOVE20Token。
 - `airdropTokenAddress` 可以为零地址，表示 Burn 只提供份额；非零时必须有合约代码、不得等于 `scopeTokenAddress`，并由部署校验确认它是标准 ERC20。它可以与范围代币之外的参与社区资产地址相同。
 - `communityWeights` 不得为空，范围代币必须出现且只能出现一次。
-- 每项 `weight > 0`，代币地址不得重复；范围代币以外的代币必须是已经完成发射的直接子币。
+- 每项 `weight > 0`，symbol 经 Launch 解析后的代币地址不得重复；范围代币以外的代币必须是已经完成发射的直接子币。
 - 权重是无单位的正整数相对值，Burn 只保存并按比例使用，不定义其链下计算方法。
 - `roundCount > 0`。
 - `quotaMultiplier > 0`，使用整数，例如 `5` 表示五倍。
@@ -63,10 +63,11 @@ constructor(
 
 ExtensionCenter 是唯一协议地址入口。Burn 从其不可变 getter 获取 Launch、Stake、Vote、Verify 和 Mint 等地址，不再接受这些地址的独立配置。实现可以缓存频繁使用的派生地址为 immutable，但不能形成第二套可配置来源。
 
-以下配置通过 `public immutable` 或只读数组公开（`scoreBase` 和 `totalCommunityWeight` 为构造时派生值，非构造参数）：
+以下配置通过公开 getter 或只读数组公开（`scoreBase` 和 `totalCommunityWeight` 为构造时派生值，非构造参数）：
 
 ```solidity
 extensionCenter()
+scopeTokenSymbol()
 scopeTokenAddress()
 airdropTokenAddress()
 startRound()
@@ -83,8 +84,8 @@ isSupportedExtensionFactory(factory)
 
 部署时按以下顺序校验 `communityWeights`：
 
-1. 校验 `scopeTokenAddress` 是已经完成公平发射的 LOVE20Token。
-2. 逐项拒绝零地址、零权重和重复代币。
+1. 通过 Launch 将 `scopeTokenSymbol` 解析为已经完成公平发射的 LOVE20Token 地址。
+2. 通过 Launch 解析各社区 symbol，逐项拒绝未知 symbol、零权重和重复代币。
 3. 范围代币自身合法；其他代币必须已经完成发射，且其 `parentTokenAddress` 必须等于范围代币。
 4. 范围代币必须在数组中出现，直接子币可以只配置本次计划支持的子集。
 5. 按传入顺序冻结参与社区、权重和各社区的 `scoreBase`，同时累加 `totalCommunityWeight`。
@@ -108,6 +109,7 @@ totalCommunityWeight = 所有已配置社区 weight 之和
 
 ```solidity
 communities() returns (address[] memory)
+communitySymbols() returns (string[] memory)
 communityWeight(address tokenAddress) returns (uint256)
 scoreBase(address tokenAddress) returns (uint256)
 totalCommunityWeight() returns (uint256)
@@ -530,6 +532,7 @@ claimableAmount = floor(
 ```solidity
 event CommunityConfigFrozen(
     address indexed tokenAddress,
+    string tokenSymbol,
     uint256 weight,
     uint256 scoreBase,
     uint256 totalSupply,
@@ -612,7 +615,7 @@ event AirdropClaimed(
 error ZeroAddress();
 error ZeroAmount();
 error EmptyBatch();
-error InvalidScopeToken(address tokenAddress);
+error InvalidScopeToken(string tokenSymbol);
 error InvalidAirdropToken(address tokenAddress);
 error InvalidRoundCount();
 error InvalidQuotaMultiplier();
@@ -621,8 +624,8 @@ error StartRoundTooEarly(
     uint256 startRound
 );
 error DuplicateExtensionFactory(address factory);
-error InvalidCommunityConfig(address tokenAddress);
-error DuplicateCommunity(address tokenAddress);
+error InvalidCommunityConfig(string tokenSymbol);
+error DuplicateCommunity(string tokenSymbol);
 error MissingScopeCommunity();
 error InvalidScoreBase(address tokenAddress);
 error UnsupportedCommunity(address tokenAddress);
@@ -638,7 +641,7 @@ error NoClaimableAirdrop();
 
 不存在的 actionId、无激励行动或尚未完成激励铸造的行动均没有可销毁额度，统一表现为 `NoClaimedReward()`，不增加同义错误（合约无法在不调用外部扩展的情况下区分"行动不存在"与"行动激励为零"，因此统一归类为此错误）。ERC20 转账失败由 `SafeERC20` 原样回滚。
 
-范围代币不是已完成发射的 LOVE20Token 时回滚 `InvalidScopeToken()`；社区配置包含零地址、零权重、尚未完成发射或非直接子币时回滚 `InvalidCommunityConfig()`，重复代币和缺少范围代币分别回滚对应错误。非零空投地址没有合约代码或等于范围代币时回滚 `InvalidAirdropToken()`。空投未启用、份额尚未最终确定、地址已经领取或当前计算金额为零时，分别使用对应的单一错误。
+范围代币 symbol 未映射到已完成发射的 LOVE20Token 时回滚 `InvalidScopeToken(tokenSymbol)`；社区配置包含未知 symbol、零权重、尚未完成发射或非直接子币时回滚 `InvalidCommunityConfig(tokenSymbol)`，重复代币和缺少范围代币分别回滚对应错误。非零空投地址没有合约代码或等于范围代币时回滚 `InvalidAirdropToken()`。空投未启用、份额尚未最终确定、地址已经领取或当前计算金额为零时，分别使用对应的单一错误。
 
 ## 12. 安全约束
 
@@ -675,10 +678,11 @@ error NoClaimableAirdrop();
 
 部署脚本对能够确定的静态检查必须 fail-closed：任何检查失败都累计失败数并以回滚或非零状态退出，不能只打印告警后继续返回成功。空投代币行为、完整生命周期和目标链 gas 由自动化测试及本次发布的 fork 验收，不伪装成部署脚本能够自动证明的性质。
 
-实现提供 `script/DeployBurn.s.sol`。脚本从环境变量读取 `EXTENSION_CENTER`、`SCOPE_TOKEN`、可选的
-`AIRDROP_TOKEN`、逗号分隔的 `COMMUNITY_TOKENS/COMMUNITY_WEIGHTS`、`START_ROUND`、
-`ROUND_COUNT`、`QUOTA_MULTIPLIER` 和可选的 `SUPPORTED_EXTENSION_FACTORIES`。部署交易广播前，脚本会
-重新核对依赖代码、全部构造参数、社区顺序与权重、独立重算的 `scoreBase`、Factory 代码及空投代币
+部署入口从配置读取 `EXTENSION_CENTER`、`SCOPE_TOKEN_SYMBOL`、可选的
+`AIRDROP_TOKEN`、逗号分隔的 `COMMUNITY_SYMBOLS/COMMUNITY_WEIGHTS`、`START_ROUND`、
+`ROUND_COUNT`、`QUOTA_MULTIPLIER` 和可选的 `SUPPORTED_EXTENSION_FACTORIES`。`00_init.sh` 通过
+ExtensionCenter 指向的 Launch 将社区 symbol 解析为其发射的代币地址，再交给 `DeployBurn.s.sol` 部署并
+核对依赖代码、全部构造参数、社区顺序与权重、独立重算的 `scoreBase`、Factory 代码及空投代币
 `balanceOf` 接口；任一不一致即回滚。目标链最坏批量 gas、空投代币转账行为及部署后的链上地址仍必须
 在本次发布的 fork 和部署后校验中确认。
 

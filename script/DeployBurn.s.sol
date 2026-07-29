@@ -6,13 +6,14 @@ import {Burn} from "../src/Burn.sol";
 import {CommunityWeight} from "../src/interface/IBurn.sol";
 import {IExtensionCenter} from "@extension/interface/IExtensionCenter.sol";
 import {ILOVE20Mint} from "@core/interfaces/ILOVE20Mint.sol";
+import {ILOVE20Launch} from "@core/interfaces/ILOVE20Launch.sol";
 import {ILOVE20Token} from "@core/interfaces/ILOVE20Token.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 struct BurnDeploymentConfig {
     address extensionCenterAddress;
-    address scopeTokenAddress;
+    string scopeTokenSymbol;
     address airdropTokenAddress;
     CommunityWeight[] communities;
     uint256 startRound;
@@ -30,7 +31,7 @@ contract DeployBurn is Script {
         vm.startBroadcast();
         deployed = new Burn(
             config.extensionCenterAddress,
-            config.scopeTokenAddress,
+            config.scopeTokenSymbol,
             config.airdropTokenAddress,
             config.communities,
             config.startRound,
@@ -55,7 +56,7 @@ contract DeployBurn is Script {
         returns (uint256 failures)
     {
         if (deployed.extensionCenter() != expected.extensionCenterAddress) ++failures;
-        if (deployed.scopeTokenAddress() != expected.scopeTokenAddress) ++failures;
+        if (keccak256(bytes(deployed.scopeTokenSymbol())) != keccak256(bytes(expected.scopeTokenSymbol))) ++failures;
         if (deployed.airdropTokenAddress() != expected.airdropTokenAddress) ++failures;
         if (deployed.startRound() != expected.startRound) ++failures;
         if (deployed.roundCount() != expected.roundCount) ++failures;
@@ -63,32 +64,7 @@ contract DeployBurn is Script {
         if (deployed.quotaMultiplier() != expected.quotaMultiplier) ++failures;
         if (deployed.remainingAirdropShare() != WAD) ++failures;
 
-        IExtensionCenter center = IExtensionCenter(expected.extensionCenterAddress);
-        address mintAddress = center.mintAddress();
-        if (
-            expected.extensionCenterAddress.code.length == 0 || center.launchAddress().code.length == 0
-                || center.voteAddress().code.length == 0 || center.verifyAddress().code.length == 0
-                || mintAddress.code.length == 0
-        ) ++failures;
-
-        uint256 rewardRate = ILOVE20Mint(mintAddress).ROUND_REWARD_GOV_PER_THOUSAND()
-            + ILOVE20Mint(mintAddress).ROUND_REWARD_ACTION_PER_THOUSAND();
-        address[] memory actualCommunities = deployed.communities();
-        if (actualCommunities.length != expected.communities.length) ++failures;
-        uint256 communityCount = Math.min(actualCommunities.length, expected.communities.length);
-        uint256 expectedTotalWeight;
-        for (uint256 i; i < expected.communities.length; ++i) {
-            expectedTotalWeight += expected.communities[i].weight;
-        }
-        for (uint256 i; i < communityCount; ++i) {
-            CommunityWeight memory community = expected.communities[i];
-            if (actualCommunities[i] != community.tokenAddress) ++failures;
-            if (deployed.communityWeight(community.tokenAddress) != community.weight) ++failures;
-            if (deployed.scoreBase(community.tokenAddress) != _scoreBase(community.tokenAddress, rewardRate)) {
-                ++failures;
-            }
-        }
-        if (deployed.totalCommunityWeight() != expectedTotalWeight) ++failures;
+        failures += _protocolAndCommunityFailureCount(deployed, expected);
 
         address[] memory actualFactories = deployed.supportedExtensionFactories();
         if (actualFactories.length != expected.supportedExtensionFactories.length) ++failures;
@@ -110,18 +86,59 @@ contract DeployBurn is Script {
         }
     }
 
-    function _readConfig() internal view returns (BurnDeploymentConfig memory config) {
-        address[] memory tokens = vm.envAddress("COMMUNITY_TOKENS", ",");
-        uint256[] memory weights = vm.envUint("COMMUNITY_WEIGHTS", ",");
-        require(tokens.length == weights.length, "community length mismatch");
+    function _protocolAndCommunityFailureCount(Burn deployed, BurnDeploymentConfig memory expected)
+        internal
+        view
+        returns (uint256 failures)
+    {
+        IExtensionCenter center = IExtensionCenter(expected.extensionCenterAddress);
+        ILOVE20Launch launch = ILOVE20Launch(center.launchAddress());
+        if (deployed.scopeTokenAddress() != launch.tokenAddressBySymbol(expected.scopeTokenSymbol)) ++failures;
+        address mintAddress = center.mintAddress();
+        if (
+            expected.extensionCenterAddress.code.length == 0 || center.launchAddress().code.length == 0
+                || center.voteAddress().code.length == 0 || center.verifyAddress().code.length == 0
+                || mintAddress.code.length == 0
+        ) ++failures;
 
-        config.communities = new CommunityWeight[](tokens.length);
-        for (uint256 i; i < tokens.length; ++i) {
-            config.communities[i] = CommunityWeight(tokens[i], weights[i]);
+        uint256 rewardRate = ILOVE20Mint(mintAddress).ROUND_REWARD_GOV_PER_THOUSAND()
+            + ILOVE20Mint(mintAddress).ROUND_REWARD_ACTION_PER_THOUSAND();
+        address[] memory actualCommunities = deployed.communities();
+        string[] memory actualSymbols = deployed.communitySymbols();
+        if (
+            actualCommunities.length != expected.communities.length
+                || actualSymbols.length != expected.communities.length
+        ) ++failures;
+        uint256 communityCount = Math.min(actualCommunities.length, expected.communities.length);
+        uint256 expectedTotalWeight;
+        for (uint256 i; i < expected.communities.length; ++i) {
+            expectedTotalWeight += expected.communities[i].weight;
+        }
+        for (uint256 i; i < communityCount; ++i) {
+            CommunityWeight memory community = expected.communities[i];
+            address tokenAddress = launch.tokenAddressBySymbol(community.tokenSymbol);
+            if (
+                actualCommunities[i] != tokenAddress
+                    || keccak256(bytes(actualSymbols[i])) != keccak256(bytes(community.tokenSymbol))
+            ) ++failures;
+            if (deployed.communityWeight(tokenAddress) != community.weight) ++failures;
+            if (deployed.scoreBase(tokenAddress) != _scoreBase(tokenAddress, rewardRate)) ++failures;
+        }
+        if (deployed.totalCommunityWeight() != expectedTotalWeight) ++failures;
+    }
+
+    function _readConfig() internal view returns (BurnDeploymentConfig memory config) {
+        string[] memory symbols = vm.envString("COMMUNITY_SYMBOLS", ",");
+        uint256[] memory weights = vm.envUint("COMMUNITY_WEIGHTS", ",");
+        require(symbols.length == weights.length, "community length mismatch");
+
+        config.communities = new CommunityWeight[](symbols.length);
+        for (uint256 i; i < symbols.length; ++i) {
+            config.communities[i] = CommunityWeight(symbols[i], weights[i]);
         }
 
         config.extensionCenterAddress = vm.envAddress("EXTENSION_CENTER");
-        config.scopeTokenAddress = vm.envAddress("SCOPE_TOKEN");
+        config.scopeTokenSymbol = vm.envString("SCOPE_TOKEN_SYMBOL");
         config.airdropTokenAddress = vm.envOr("AIRDROP_TOKEN", address(0));
         config.startRound = vm.envUint("START_ROUND");
         config.roundCount = vm.envUint("ROUND_COUNT");
