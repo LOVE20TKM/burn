@@ -665,24 +665,24 @@ error NoClaimableAirdrop();
 4. 核对 `startRound`、`roundCount`、派生 `endRound` 和整数 `quotaMultiplier`；`START_ROUND` 必须在部署前确定为非负整数，不接受 `current`、`currentRound` 等动态别名。
 5. 核对所有受支持 Factory 的地址、代码和激励接口。
 6. 若配置同链空投代币，确认它不等于范围代币，并验证其代码、`balanceOf/transfer` 行为及无转账税、无 rebase 假设；只需要份额时传零地址。
-7. 运行合约自动化测试和 gas 报告；在目标链 fork 上按本次发布可构造的状态模拟部署、最坏批量、顺序领取和主要聚合 view，记录无法在当前轮次构造的项目及其替代证据。
+7. 运行合约自动化测试和 gas 报告，确认 `scoreBase`、派生总权重、Factory 成员映射和部署事件；在目标链 fork 上按本次发布可构造的状态模拟部署、最坏批量、顺序领取和主要聚合 view，记录无法在当前轮次构造的项目及其替代证据。
 
 部署后、公布地址前：
 
-1. 核对范围代币、可选空投代币、周期及倍数 getter。
-2. 核对 `communities()`、每个社区权重、`scoreBase` 和总权重。
-3. 核对完整 Factory 数组和成员判断。
-4. 核对 `CommunityConfigFrozen` 与 `SupportedExtensionFactoryFrozen` 日志，以及每个社区的 `scoreBase`。
+1. 确认目标链、部署地址和部署字节码或验证源码对应本次通过测试的版本。
+2. 核对范围代币、可选空投代币、周期及倍数 getter。
+3. 核对 `communities()`、`communitySymbols()`、每个社区权重和完整 Factory 数组与部署参数一致。
+4. 读取并记录部署时派生的 `scopeTokenAddress`、`scoreBase` 和 `totalCommunityWeight`，不使用部署后可能已经变化的供应量重新计算。
 5. 独立基准超出偏差、名单不完整、参数不符合本次发布计划、空投代币不符合假设、gas 超限或任何依赖不匹配时，视为部署失败，不公布地址。
-6. 验证合约源码，并在前端及需要的外部空投程序中只登记通过验收的地址。
+6. 在前端及需要的外部空投程序中只登记通过验收的地址。
 
-部署脚本对能够确定的静态检查必须 fail-closed：任何检查失败都累计失败数并以回滚或非零状态退出，不能只打印告警后继续返回成功。空投代币行为、完整生命周期和目标链 gas 由自动化测试及本次发布的 fork 验收，不伪装成部署脚本能够自动证明的性质。
+部署脚本对构造参数、依赖代码和外部接口等能够确定的输入检查必须 fail-closed：任何检查失败都累计失败数并以回滚或非零状态退出，不能只打印告警后继续返回成功。`scoreBase`、总权重、Factory 成员映射和部署事件由合约测试保障；部署后只记录派生值，不重复验证已经测试过的构造逻辑。空投代币行为、完整生命周期和目标链 gas 由自动化测试及本次发布的 fork 验收，不伪装成部署脚本能够自动证明的性质。
 
 部署入口从配置读取 `EXTENSION_CENTER`、`SCOPE_TOKEN_SYMBOL`、可选的
 `AIRDROP_TOKEN`、逗号分隔的 `COMMUNITY_SYMBOLS/COMMUNITY_WEIGHTS`、`START_ROUND`、
 `ROUND_COUNT`、`QUOTA_MULTIPLIER` 和可选的 `SUPPORTED_EXTENSION_FACTORIES`。`00_init.sh` 通过
 ExtensionCenter 指向的 Launch 将社区 symbol 解析为其发射的代币地址，再交给 `DeployBurn.s.sol` 部署并
-核对依赖代码、全部构造参数、社区顺序与权重、独立重算的 `scoreBase`、Factory 代码及空投代币
+核对依赖代码、全部构造参数、社区顺序与权重、Factory 数组和代码及空投代币
 `balanceOf` 接口；任一不一致即回滚。目标链最坏批量 gas、空投代币转账行为及部署后的链上地址仍必须
 在本次发布的 fork 和部署后校验中确认。
 
@@ -717,4 +717,4 @@ ExtensionCenter 指向的 Launch 将社区 symbol 解析为其发射的代币地
 13. 零空投代币地址模式只提供份额且所有领取调用回滚；空投代币等于范围代币时部署回滚；同链模式只允许最终份额为正的地址成功领取一次。
 14. 同链空投按当前余额和剩余份额计算：固定余额下不同领取顺序只产生少量最小计量单位差异，领取中新增余额只分给尚未领取地址，全部地址领取后新增余额及份额舍入对应余额无法领取。
 15. `claimAirdrop` 在空投代币回调重入、转账失败和计算结果为零时正确回滚且不改变状态；`accountAirdropState` 在禁用、销毁中、可领取和已领取状态下字段一致。
-16. 部署校验逻辑注入错误范围、权重、`scoreBase`、依赖、参数或不可读空投代币时必须失败；转账失败、回调重入、零领取量和主要 gas 路径分别由对应合约测试覆盖。
+16. 部署校验逻辑注入错误范围、权重、依赖、参数或不可读空投代币时必须失败，部署后供应量变化不产生校验误报；转账失败、回调重入、零领取量和主要 gas 路径分别由对应合约测试覆盖。

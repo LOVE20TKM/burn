@@ -5,9 +5,7 @@ import {Script} from "forge-std/Script.sol";
 import {Burn} from "../src/Burn.sol";
 import {CommunityWeight} from "../src/interface/IBurn.sol";
 import {IExtensionCenter} from "@extension/interface/IExtensionCenter.sol";
-import {ILOVE20Mint} from "@core/interfaces/ILOVE20Mint.sol";
 import {ILOVE20Launch} from "@core/interfaces/ILOVE20Launch.sol";
-import {ILOVE20Token} from "@core/interfaces/ILOVE20Token.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -71,10 +69,7 @@ contract DeployBurn is Script {
         uint256 factoryCount = Math.min(actualFactories.length, expected.supportedExtensionFactories.length);
         for (uint256 i; i < factoryCount; ++i) {
             address factory = expected.supportedExtensionFactories[i];
-            if (
-                actualFactories[i] != factory || !deployed.isSupportedExtensionFactory(factory)
-                    || factory.code.length == 0
-            ) {
+            if (actualFactories[i] != factory || factory.code.length == 0) {
                 ++failures;
             }
         }
@@ -101,8 +96,6 @@ contract DeployBurn is Script {
                 || mintAddress.code.length == 0
         ) ++failures;
 
-        uint256 rewardRate = ILOVE20Mint(mintAddress).ROUND_REWARD_GOV_PER_THOUSAND()
-            + ILOVE20Mint(mintAddress).ROUND_REWARD_ACTION_PER_THOUSAND();
         address[] memory actualCommunities = deployed.communities();
         string[] memory actualSymbols = deployed.communitySymbols();
         if (
@@ -110,10 +103,6 @@ contract DeployBurn is Script {
                 || actualSymbols.length != expected.communities.length
         ) ++failures;
         uint256 communityCount = Math.min(actualCommunities.length, expected.communities.length);
-        uint256 expectedTotalWeight;
-        for (uint256 i; i < expected.communities.length; ++i) {
-            expectedTotalWeight += expected.communities[i].weight;
-        }
         for (uint256 i; i < communityCount; ++i) {
             CommunityWeight memory community = expected.communities[i];
             address tokenAddress = launch.tokenAddressBySymbol(community.tokenSymbol);
@@ -122,9 +111,7 @@ contract DeployBurn is Script {
                     || keccak256(bytes(actualSymbols[i])) != keccak256(bytes(community.tokenSymbol))
             ) ++failures;
             if (deployed.communityWeight(tokenAddress) != community.weight) ++failures;
-            if (deployed.scoreBase(tokenAddress) != _scoreBase(tokenAddress, rewardRate)) ++failures;
         }
-        if (deployed.totalCommunityWeight() != expectedTotalWeight) ++failures;
     }
 
     function _readConfig() internal view returns (BurnDeploymentConfig memory config) {
@@ -144,12 +131,5 @@ contract DeployBurn is Script {
         config.roundCount = vm.envUint("ROUND_COUNT");
         config.quotaMultiplier = vm.envUint("QUOTA_MULTIPLIER");
         config.supportedExtensionFactories = vm.envOr("SUPPORTED_EXTENSION_FACTORIES", ",", new address[](0));
-    }
-
-    function _scoreBase(address tokenAddress, uint256 rewardRate) internal view returns (uint256) {
-        ILOVE20Token token = ILOVE20Token(tokenAddress);
-        uint256 totalSupply = token.totalSupply();
-        uint256 roundReward = Math.mulDiv(token.maxSupply() - totalSupply, rewardRate, 1000);
-        return WAD + Math.mulDiv(roundReward, WAD, totalSupply);
     }
 }

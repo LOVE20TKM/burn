@@ -48,6 +48,15 @@ contract BurnTest is Test {
     address internal alice = address(0xA11CE);
     address internal bob = address(0xB0B);
 
+    event CommunityConfigFrozen(
+        address indexed tokenAddress,
+        string tokenSymbol,
+        uint256 weight,
+        uint256 scoreBase,
+        uint256 totalSupply,
+        uint256 deploymentRoundReward
+    );
+    event SupportedExtensionFactoryFrozen(address indexed factory);
     event SLTokenLocked(
         address indexed tokenAddress,
         address indexed account,
@@ -150,6 +159,21 @@ contract BurnTest is Test {
         assertEq(burn.scoreBase(address(childToken)), 1.018 ether);
         assertEq(burn.remainingAirdropShare(), 1 ether);
         assertEq(burn.supportedExtensionFactories().length, 0);
+    }
+
+    function test_ConstructorEmitsFrozenConfiguration() public {
+        MockExtensionFactory factory = new MockExtensionFactory();
+        address[] memory factories = new address[](1);
+        factories[0] = address(factory);
+
+        vm.expectEmit(true, false, false, true);
+        emit CommunityConfigFrozen(address(scopeToken), "SCOPE", 600, 1.018 ether, INITIAL_SUPPLY, 18_000_000 ether);
+        vm.expectEmit(true, false, false, true);
+        emit CommunityConfigFrozen(address(childToken), "CHILD", 400, 1.018 ether, INITIAL_SUPPLY, 18_000_000 ether);
+        vm.expectEmit(true, false, false, false);
+        emit SupportedExtensionFactoryFrozen(address(factory));
+
+        _deployBurnWithFactories(factories);
     }
 
     function test_RoundAndScoreMultiplierFollowVerifyClock() public {
@@ -568,15 +592,15 @@ contract BurnTest is Test {
         MockRevertingReward unsupportedReward = new MockRevertingReward();
         uint256 supportedActionId = 22;
         uint256 unsupportedActionId = 23;
+        address[] memory factories = new address[](1);
+        factories[0] = address(factory);
+        Burn extensionBurn = _deployBurnWithFactories(factories);
+
         center.setExtension(address(scopeToken), supportedActionId, address(reward), address(factory));
         center.setExtension(address(scopeToken), unsupportedActionId, address(unsupportedReward), address(0xBAD));
         vote.setVotedActionId(address(scopeToken), 5, supportedActionId);
         vote.setVotedActionId(address(scopeToken), 5, unsupportedActionId);
         reward.setReward(5, alice, 40 ether, 10 ether, true);
-
-        address[] memory factories = new address[](1);
-        factories[0] = address(factory);
-        Burn extensionBurn = _deployBurnWithFactories(factories);
         scopeToken.transfer(alice, 200 ether);
         verify.setCurrentRound(6);
 
@@ -743,6 +767,26 @@ contract BurnTest is Test {
 
         vm.expectRevert(IBurnErrors.AirdropDisabled.selector);
         burn.claimAirdrop();
+    }
+
+    function test_AirdropTokenCanBeParticipatingChildCommunity() public {
+        Burn airdropBurn = _deployBurnWithAirdrop(address(childToken), new address[](0));
+        childSL.mint(alice, 1 ether);
+        verify.setCurrentRound(6);
+
+        vm.startPrank(alice);
+        childSL.approve(address(airdropBurn), 1 ether);
+        airdropBurn.lockSLToken(address(childToken), 5, 1 ether);
+        vm.stopPrank();
+
+        childToken.transfer(address(airdropBurn), 100 ether);
+        verify.setCurrentRound(9);
+        assertEq(airdropBurn.accountAirdropState(alice).claimableAmount, 100 ether);
+
+        vm.prank(alice);
+        assertEq(airdropBurn.claimAirdrop(), 100 ether);
+        assertEq(childToken.balanceOf(alice), 100 ether);
+        assertEq(childToken.balanceOf(address(airdropBurn)), 0);
     }
 
     function test_AirdropClaimOrderOnlyChangesRoundingAndPostClaimFundsRemain() public {
@@ -930,7 +974,7 @@ contract BurnTest is Test {
         config.extensionCenterAddress = address(center);
 
         scopeToken.mint(address(this), 1 ether);
-        assertGt(deployer.validationFailureCount(burn, config), 0);
+        assertEq(deployer.validationFailureCount(burn, config), 0);
 
         MockUnreadableAirdropToken unreadable = new MockUnreadableAirdropToken();
         Burn unreadableBurn = _deployBurnWithAirdrop(address(unreadable), new address[](0));
