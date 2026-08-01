@@ -87,6 +87,7 @@ invalid_start_round() (
 invalid_category_weights() (
     set +u
     cd "$REPO_ROOT" || exit 1
+    local category_weights=$1
     local network_name="invalid_category_weights_$$"
     local network_path="$REPO_ROOT/script/network/$network_name"
     mkdir -p "$network_path"
@@ -100,7 +101,7 @@ invalid_category_weights() (
         'SCOPE_TOKEN_SYMBOL=FIRST' \
         'COMMUNITY_SYMBOLS=FIRST' \
         'COMMUNITY_WEIGHTS=1' \
-        'CATEGORY_WEIGHTS=1:1:1' \
+        "CATEGORY_WEIGHTS=$category_weights" \
         'START_ROUND=1' \
         'ROUND_COUNT=3' \
         'QUOTA_MULTIPLIER=5' >"$network_path/burn.params"
@@ -126,7 +127,7 @@ resolve_symbols() (
         'SCOPE_TOKEN_SYMBOL=FIRST' \
         'COMMUNITY_SYMBOLS=FIRST,CHILD' \
         'COMMUNITY_WEIGHTS=100,200' \
-        'CATEGORY_WEIGHTS=1:1:1:1' \
+        'CATEGORY_WEIGHTS=0:1:1:1' \
         'START_ROUND=1' \
         'ROUND_COUNT=3' \
         'QUOTA_MULTIPLIER=5' >"$network_path/burn.params"
@@ -277,8 +278,12 @@ assert_fails_with \
     invalid_start_round
 assert_fails_with \
     '00_init rejects malformed category weights' \
-    'CATEGORY_WEIGHTS must contain four positive integers separated by :' \
-    invalid_category_weights
+    'CATEGORY_WEIGHTS must contain four non-negative integers separated by :' \
+    invalid_category_weights '1:1:1'
+assert_fails_with \
+    '00_init rejects all-zero category weights' \
+    'CATEGORY_WEIGHTS must contain at least one positive integer' \
+    invalid_category_weights '0:0:0:0'
 assert_succeeds '00_init resolves Launch token symbols' resolve_symbols
 assert_fails_with \
     '00_init rejects symbols not issued by Launch' \

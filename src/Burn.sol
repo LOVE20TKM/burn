@@ -153,7 +153,7 @@ contract Burn is IBurn, ReentrancyGuard {
         internal
         pure
     {
-        if (slWeight == 0 || stWeight == 0 || govWeight == 0 || actionWeight == 0) {
+        if (slWeight == 0 && stWeight == 0 && govWeight == 0 && actionWeight == 0) {
             revert InvalidCategoryWeights();
         }
         uint256 total = slWeight;
@@ -275,7 +275,7 @@ contract Burn is IBurn, ReentrancyGuard {
     }
 
     function burnGovRewardToken(address tokenAddress, uint256 round, uint256 amount) external override {
-        _validateOperation(tokenAddress, round, amount);
+        _validateOperation(tokenAddress, round, amount, govRewardBurnWeight);
         uint256 actualMintedReward = _mint.govRewardMintedByAccount(tokenAddress, round, msg.sender);
         if (actualMintedReward == 0) revert NoClaimedReward();
 
@@ -499,7 +499,9 @@ contract Burn is IBurn, ReentrancyGuard {
     }
 
     function _lockReceipt(address tokenAddress, uint256 round, uint256 amount, Category category) internal {
-        _validateOperation(tokenAddress, round, amount);
+        _validateOperation(
+            tokenAddress, round, amount, category == Category.SLTokenLock ? slTokenLockWeight : stTokenLockWeight
+        );
         (uint256 multiplier, uint256 operationScore) =
             _recordBurnStats(msg.sender, tokenAddress, round, category, amount);
 
@@ -565,7 +567,7 @@ contract Burn is IBurn, ReentrancyGuard {
 
     function _burnActionRewardToken(uint256 round, ActionRewardBurnRequest calldata request) internal {
         address tokenAddress = request.tokenAddress;
-        _validateOperation(tokenAddress, round, request.amount);
+        _validateOperation(tokenAddress, round, request.amount, actionRewardBurnWeight);
 
         address extensionAddress = _center.extension(tokenAddress, request.actionId);
         uint256 actualMintedReward;
@@ -829,8 +831,12 @@ contract Burn is IBurn, ReentrancyGuard {
         return stats.actionRewardBurn;
     }
 
-    function _validateOperation(address tokenAddress, uint256 round, uint256 amount) internal view {
+    function _validateOperation(address tokenAddress, uint256 round, uint256 amount, uint256 categoryWeight)
+        internal
+        view
+    {
         _requireCommunity(tokenAddress);
+        if (categoryWeight == 0) revert CategoryDisabled();
         if (amount == 0) revert ZeroAmount();
         if (!isRoundOpen(round)) {
             revert RoundNotOpen(round, _verify.currentRound());

@@ -166,6 +166,65 @@ contract BurnTest is Test {
         assertEq(burn.supportedExtensionFactories().length, 0);
     }
 
+    function test_ConstructorAllowsDisabledCategoryWeight() public {
+        Burn disabledCategoryBurn = new Burn(
+            address(center),
+            "SCOPE",
+            address(0),
+            _communityWeights(),
+            0,
+            1,
+            1,
+            1,
+            _roundConfig(5, 3, 5),
+            new address[](0)
+        );
+
+        assertEq(disabledCategoryBurn.slTokenLockWeight(), 0);
+        assertEq(disabledCategoryBurn.stTokenLockWeight(), 1);
+        assertEq(disabledCategoryBurn.govRewardBurnWeight(), 1);
+        assertEq(disabledCategoryBurn.actionRewardBurnWeight(), 1);
+    }
+
+    function test_DisabledCategoriesRejectOperations() public {
+        Burn slDisabled = new Burn(
+            address(center),
+            "SCOPE",
+            address(0),
+            _communityWeights(),
+            0,
+            1,
+            1,
+            1,
+            _roundConfig(5, 3, 5),
+            new address[](0)
+        );
+        Burn otherCategoriesDisabled = new Burn(
+            address(center),
+            "SCOPE",
+            address(0),
+            _communityWeights(),
+            1,
+            0,
+            0,
+            0,
+            _roundConfig(5, 3, 5),
+            new address[](0)
+        );
+        ActionRewardBurnRequest[] memory requests = new ActionRewardBurnRequest[](1);
+        requests[0] = ActionRewardBurnRequest(address(scopeToken), 1, 1);
+        verify.setCurrentRound(6);
+
+        vm.expectRevert(IBurnErrors.CategoryDisabled.selector);
+        slDisabled.lockSLToken(address(scopeToken), 5, 1);
+        vm.expectRevert(IBurnErrors.CategoryDisabled.selector);
+        otherCategoriesDisabled.lockSTToken(address(scopeToken), 5, 1);
+        vm.expectRevert(IBurnErrors.CategoryDisabled.selector);
+        otherCategoriesDisabled.burnGovRewardToken(address(scopeToken), 5, 1);
+        vm.expectRevert(IBurnErrors.CategoryDisabled.selector);
+        otherCategoriesDisabled.burnActionRewardTokens(5, requests);
+    }
+
     function test_ConstructorEmitsFrozenConfiguration() public {
         MockExtensionFactory factory = new MockExtensionFactory();
         address[] memory factories = new address[](1);
@@ -944,9 +1003,9 @@ contract BurnTest is Test {
             "SCOPE",
             address(0),
             _communityWeights(),
-            1,
-            1,
-            1,
+            0,
+            0,
+            0,
             0,
             _roundConfig(5, 3, 5),
             new address[](0)

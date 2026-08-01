@@ -136,6 +136,7 @@ interface IBurnErrors {
     error InvalidRoundCount();
     error InvalidQuotaMultiplier();
     error InvalidCategoryWeights();
+    error CategoryDisabled();
     error StartRoundTooEarly(uint256 currentVerifyRound, uint256 startRound);
     error DuplicateExtensionFactory(address factory);
     error InvalidCommunityConfig(string tokenSymbol);

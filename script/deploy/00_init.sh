@@ -62,8 +62,13 @@ if [[ ! "$START_ROUND" =~ ^[0-9]+$ ]]; then
     return 1 2>/dev/null || exit 1
 fi
 
-if [[ ! "$CATEGORY_WEIGHTS" =~ ^[1-9][0-9]*(:[1-9][0-9]*){3}$ ]]; then
-    echo -e "\033[31mError:\033[0m CATEGORY_WEIGHTS must contain four positive integers separated by :"
+if [[ ! "$CATEGORY_WEIGHTS" =~ ^[0-9]+(:[0-9]+){3}$ ]]; then
+    echo -e "\033[31mError:\033[0m CATEGORY_WEIGHTS must contain four non-negative integers separated by :"
+    return 1 2>/dev/null || exit 1
+fi
+
+if [[ "$CATEGORY_WEIGHTS" =~ ^0+:0+:0+:0+$ ]]; then
+    echo -e "\033[31mError:\033[0m CATEGORY_WEIGHTS must contain at least one positive integer"
     return 1 2>/dev/null || exit 1
 fi
 
