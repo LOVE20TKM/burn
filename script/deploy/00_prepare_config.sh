@@ -101,3 +101,4 @@ printf '\nReview, then update burn.params manually:\n'
 printf 'SCOPE_TOKEN_SYMBOL=%s\n' "$scope_symbol"
 printf 'COMMUNITY_SYMBOLS=%s\n' "$community_symbols"
 printf 'COMMUNITY_WEIGHTS=%s\n' "$community_weights"
+printf 'CATEGORY_WEIGHTS=1:1:1:1\n'

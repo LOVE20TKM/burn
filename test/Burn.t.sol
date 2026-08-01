@@ -7,6 +7,7 @@ import {DeployBurn, BurnDeploymentConfig} from "../script/DeployBurn.s.sol";
 import {
     IBurnErrors,
     CommunityWeight,
+    BurnRoundConfig,
     BurnStats,
     ActionRewardBurnRequest,
     ActionRewardBurnState,
@@ -144,6 +145,10 @@ contract BurnTest is Test {
         assertEq(burn.roundCount(), 3);
         assertEq(burn.endRound(), 7);
         assertEq(burn.quotaMultiplier(), 5);
+        assertEq(burn.slTokenLockWeight(), 1);
+        assertEq(burn.stTokenLockWeight(), 1);
+        assertEq(burn.govRewardBurnWeight(), 1);
+        assertEq(burn.actionRewardBurnWeight(), 1);
 
         address[] memory communities = burn.communities();
         assertEq(communities.length, 2);
@@ -310,8 +315,18 @@ contract BurnTest is Test {
 
     function test_BurnStatsThroughRoundStaysEfficientWith128Rounds() public {
         uint256 rounds = 128;
-        Burn longBurn =
-            new Burn(address(center), "SCOPE", address(0), _communityWeights(), 5, rounds, 5, new address[](0));
+        Burn longBurn = new Burn(
+            address(center),
+            "SCOPE",
+            address(0),
+            _communityWeights(),
+            1,
+            1,
+            1,
+            1,
+            _roundConfig(5, rounds, 5),
+            new address[](0)
+        );
         scopeSL.mint(alice, rounds * 1 ether);
 
         uint256 earlyWriteGas;
@@ -665,6 +680,40 @@ contract BurnTest is Test {
         assertTrue(aliceFinalized);
     }
 
+    function test_SharesUseConfiguredCategoryWeightsAndRenormalizeInactiveCategories() public {
+        Burn weightedBurn = new Burn(
+            address(center),
+            "SCOPE",
+            address(0),
+            _communityWeights(),
+            1,
+            3,
+            5,
+            7,
+            _roundConfig(5, 3, 5),
+            new address[](0)
+        );
+        scopeSL.mint(alice, 1 ether);
+        scopeST.mint(bob, 1 ether);
+        verify.setCurrentRound(6);
+
+        vm.startPrank(alice);
+        scopeSL.approve(address(weightedBurn), 1 ether);
+        weightedBurn.lockSLToken(address(scopeToken), 5, 1 ether);
+        vm.stopPrank();
+        vm.startPrank(bob);
+        scopeST.approve(address(weightedBurn), 1 ether);
+        weightedBurn.lockSTToken(address(scopeToken), 5, 1 ether);
+        vm.stopPrank();
+
+        TokenShare memory aliceShare = weightedBurn.accountTokenShare(alice, address(scopeToken));
+        TokenShare memory bobShare = weightedBurn.accountTokenShare(bob, address(scopeToken));
+        assertEq(aliceShare.slTokenLock, 0.25 ether);
+        assertEq(aliceShare.total, 0.25 ether);
+        assertEq(bobShare.stTokenLock, 0.75 ether);
+        assertEq(bobShare.total, 0.75 ether);
+    }
+
     function test_NoParticipationReturnsZeroSharesAndEmptyParticipants() public {
         TokenShare memory tokenShare = burn.accountTokenShare(alice, address(scopeToken));
         assertEq(tokenShare.slTokenLock, 0);
@@ -889,20 +938,34 @@ contract BurnTest is Test {
     }
 
     function test_ConstructorRejectsInvalidCommunityConfiguration() public {
+        vm.expectRevert(IBurnErrors.InvalidCategoryWeights.selector);
+        new Burn(
+            address(center),
+            "SCOPE",
+            address(0),
+            _communityWeights(),
+            1,
+            1,
+            1,
+            0,
+            _roundConfig(5, 3, 5),
+            new address[](0)
+        );
+
         CommunityWeight[] memory weights = new CommunityWeight[](1);
         weights[0] = CommunityWeight("CHILD", 1);
         vm.expectRevert(IBurnErrors.MissingScopeCommunity.selector);
-        new Burn(address(center), "SCOPE", address(0), weights, 5, 3, 5, new address[](0));
+        new Burn(address(center), "SCOPE", address(0), weights, 1, 1, 1, 1, _roundConfig(5, 3, 5), new address[](0));
 
         weights[0] = CommunityWeight("SCOPE", 0);
         vm.expectRevert(abi.encodeWithSelector(IBurnErrors.InvalidCommunityConfig.selector, "SCOPE"));
-        new Burn(address(center), "SCOPE", address(0), weights, 5, 3, 5, new address[](0));
+        new Burn(address(center), "SCOPE", address(0), weights, 1, 1, 1, 1, _roundConfig(5, 3, 5), new address[](0));
 
         weights = new CommunityWeight[](2);
         weights[0] = CommunityWeight("SCOPE", 1);
         weights[1] = CommunityWeight("SCOPE", 2);
         vm.expectRevert(abi.encodeWithSelector(IBurnErrors.DuplicateCommunity.selector, "SCOPE"));
-        new Burn(address(center), "SCOPE", address(0), weights, 5, 3, 5, new address[](0));
+        new Burn(address(center), "SCOPE", address(0), weights, 1, 1, 1, 1, _roundConfig(5, 3, 5), new address[](0));
 
         MockLOVE20Token unfinishedToken = new MockLOVE20Token(
             "UNFINISHED", INITIAL_SUPPLY, MAX_SUPPLY, address(scopeToken), address(0x51), address(0x52)
@@ -910,7 +973,7 @@ contract BurnTest is Test {
         launch.setToken(address(unfinishedToken), address(scopeToken), false);
         weights[1] = CommunityWeight("UNFINISHED", 2);
         vm.expectRevert(abi.encodeWithSelector(IBurnErrors.InvalidCommunityConfig.selector, "UNFINISHED"));
-        new Burn(address(center), "SCOPE", address(0), weights, 5, 3, 5, new address[](0));
+        new Burn(address(center), "SCOPE", address(0), weights, 1, 1, 1, 1, _roundConfig(5, 3, 5), new address[](0));
 
         MockLOVE20Token grandchildToken = new MockLOVE20Token(
             "GRANDCHILD", INITIAL_SUPPLY, MAX_SUPPLY, address(childToken), address(0x61), address(0x62)
@@ -918,10 +981,21 @@ contract BurnTest is Test {
         launch.setToken(address(grandchildToken), address(childToken), true);
         weights[1] = CommunityWeight("GRANDCHILD", 2);
         vm.expectRevert(abi.encodeWithSelector(IBurnErrors.InvalidCommunityConfig.selector, "GRANDCHILD"));
-        new Burn(address(center), "SCOPE", address(0), weights, 5, 3, 5, new address[](0));
+        new Burn(address(center), "SCOPE", address(0), weights, 1, 1, 1, 1, _roundConfig(5, 3, 5), new address[](0));
 
         vm.expectRevert(abi.encodeWithSelector(IBurnErrors.InvalidAirdropToken.selector, address(scopeToken)));
-        new Burn(address(center), "SCOPE", address(scopeToken), _communityWeights(), 5, 3, 5, new address[](0));
+        new Burn(
+            address(center),
+            "SCOPE",
+            address(scopeToken),
+            _communityWeights(),
+            1,
+            1,
+            1,
+            1,
+            _roundConfig(5, 3, 5),
+            new address[](0)
+        );
     }
 
     function test_ConstructorAcceptsChildAsScopeAndRejectsInvalidScopeAndEmptyCommunities() public {
@@ -932,17 +1006,56 @@ contract BurnTest is Test {
         CommunityWeight[] memory childScopeWeights = new CommunityWeight[](2);
         childScopeWeights[0] = CommunityWeight("CHILD", 3);
         childScopeWeights[1] = CommunityWeight("GRANDCHILD", 1);
-        Burn childScopeBurn =
-            new Burn(address(center), "CHILD", address(0), childScopeWeights, 5, 3, 5, new address[](0));
+        Burn childScopeBurn = new Burn(
+            address(center), "CHILD", address(0), childScopeWeights, 1, 1, 1, 1, _roundConfig(5, 3, 5), new address[](0)
+        );
         assertEq(childScopeBurn.scopeTokenSymbol(), "CHILD");
         assertEq(childScopeBurn.scopeTokenAddress(), address(childToken));
         assertEq(childScopeBurn.communities().length, 2);
 
         vm.expectRevert(abi.encodeWithSelector(IBurnErrors.InvalidScopeToken.selector, "UNKNOWN"));
-        new Burn(address(center), "UNKNOWN", address(0), childScopeWeights, 5, 3, 5, new address[](0));
+        new Burn(
+            address(center),
+            "UNKNOWN",
+            address(0),
+            childScopeWeights,
+            1,
+            1,
+            1,
+            1,
+            _roundConfig(5, 3, 5),
+            new address[](0)
+        );
 
         vm.expectRevert(IBurnErrors.MissingScopeCommunity.selector);
-        new Burn(address(center), "SCOPE", address(0), new CommunityWeight[](0), 5, 3, 5, new address[](0));
+        new Burn(
+            address(center),
+            "SCOPE",
+            address(0),
+            new CommunityWeight[](0),
+            1,
+            1,
+            1,
+            1,
+            _roundConfig(5, 3, 5),
+            new address[](0)
+        );
+    }
+
+    function test_ConstructorRejectsOverflowingCategoryWeightSum() public {
+        vm.expectRevert(IBurnErrors.InvalidCategoryWeights.selector);
+        new Burn(
+            address(center),
+            "SCOPE",
+            address(0),
+            _communityWeights(),
+            type(uint256).max,
+            1,
+            1,
+            1,
+            _roundConfig(5, 3, 5),
+            new address[](0)
+        );
     }
 
     function test_DeploymentValidationFailsClosedForMismatchesAndUnreadableAirdrop() public {
@@ -956,6 +1069,9 @@ contract BurnTest is Test {
         config.communities[0].weight = 601;
         assertGt(deployer.validationFailureCount(burn, config), 0);
         config.communities[0].weight = 600;
+        config.stTokenLockWeight = 2;
+        assertGt(deployer.validationFailureCount(burn, config), 0);
+        config.stTokenLockWeight = 1;
 
         config.startRound = 6;
         assertGt(deployer.validationFailureCount(burn, config), 0);
@@ -1063,7 +1179,9 @@ contract BurnTest is Test {
         internal
         returns (Burn deployed)
     {
-        deployed = new Burn(address(center), "SCOPE", airdropToken, _communityWeights(), 5, 3, 5, factories);
+        deployed = new Burn(
+            address(center), "SCOPE", airdropToken, _communityWeights(), 1, 1, 1, 1, _roundConfig(5, 3, 5), factories
+        );
     }
 
     function _communityWeights() internal pure returns (CommunityWeight[] memory weights) {
@@ -1072,11 +1190,19 @@ contract BurnTest is Test {
         weights[1] = CommunityWeight("CHILD", 400);
     }
 
+    function _roundConfig(uint256 start, uint256 count, uint256 quota) internal pure returns (BurnRoundConfig memory) {
+        return BurnRoundConfig(start, count, quota);
+    }
+
     function _deploymentConfig(address airdropToken) internal view returns (BurnDeploymentConfig memory config) {
         config.extensionCenterAddress = address(center);
         config.scopeTokenSymbol = "SCOPE";
         config.airdropTokenAddress = airdropToken;
         config.communities = _communityWeights();
+        config.slTokenLockWeight = 1;
+        config.stTokenLockWeight = 1;
+        config.govRewardBurnWeight = 1;
+        config.actionRewardBurnWeight = 1;
         config.startRound = 5;
         config.roundCount = 3;
         config.quotaMultiplier = 5;

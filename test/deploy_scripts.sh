@@ -70,6 +70,7 @@ invalid_start_round() (
         'SCOPE_TOKEN_SYMBOL=FIRST' \
         'COMMUNITY_SYMBOLS=FIRST' \
         'COMMUNITY_WEIGHTS=1' \
+        'CATEGORY_WEIGHTS=1:1:1:1' \
         'START_ROUND=current' \
         'ROUND_COUNT=3' \
         'QUOTA_MULTIPLIER=5' >"$network_path/burn.params"
@@ -79,6 +80,32 @@ invalid_start_round() (
             return 0
         fi
         return 1
+    }
+    source script/deploy/00_init.sh "$network_name"
+)
+
+invalid_category_weights() (
+    set +u
+    cd "$REPO_ROOT" || exit 1
+    local network_name="invalid_category_weights_$$"
+    local network_path="$REPO_ROOT/script/network/$network_name"
+    mkdir -p "$network_path"
+    trap 'rm -rf "$network_path"' EXIT
+    : >"$network_path/.account"
+    printf '%s\n' \
+        'RPC_URL=http://127.0.0.1:8545' \
+        'CHAIN_ID=31337' >"$network_path/network.params"
+    printf '%s\n' \
+        'EXTENSION_CENTER=0x1111111111111111111111111111111111111111' \
+        'SCOPE_TOKEN_SYMBOL=FIRST' \
+        'COMMUNITY_SYMBOLS=FIRST' \
+        'COMMUNITY_WEIGHTS=1' \
+        'CATEGORY_WEIGHTS=1:1:1' \
+        'START_ROUND=1' \
+        'ROUND_COUNT=3' \
+        'QUOTA_MULTIPLIER=5' >"$network_path/burn.params"
+    cast() {
+        [ "$1" = "chain-id" ] && printf '31337\n'
     }
     source script/deploy/00_init.sh "$network_name"
 )
@@ -99,6 +126,7 @@ resolve_symbols() (
         'SCOPE_TOKEN_SYMBOL=FIRST' \
         'COMMUNITY_SYMBOLS=FIRST,CHILD' \
         'COMMUNITY_WEIGHTS=100,200' \
+        'CATEGORY_WEIGHTS=1:1:1:1' \
         'START_ROUND=1' \
         'ROUND_COUNT=3' \
         'QUOTA_MULTIPLIER=5' >"$network_path/burn.params"
@@ -139,6 +167,7 @@ reject_unknown_symbol() (
         'SCOPE_TOKEN_SYMBOL=UNKNOWN' \
         'COMMUNITY_SYMBOLS=UNKNOWN' \
         'COMMUNITY_WEIGHTS=1' \
+        'CATEGORY_WEIGHTS=1:1:1:1' \
         'START_ROUND=1' \
         'ROUND_COUNT=3' \
         'QUOTA_MULTIPLIER=5' >"$network_path/burn.params"
@@ -205,6 +234,7 @@ prepare_config() (
         'SCOPE_TOKEN_SYMBOL=' \
         'COMMUNITY_SYMBOLS=' \
         'COMMUNITY_WEIGHTS=' \
+        'CATEGORY_WEIGHTS=1:1:1:1' \
         'START_ROUND=' \
         'ROUND_COUNT=' \
         'QUOTA_MULTIPLIER=' >"$network_path/burn.params"
@@ -237,6 +267,7 @@ prepare_config() (
     [[ "$output" == *'SCOPE_TOKEN_SYMBOL=FIRST'* ]] || exit 1
     [[ "$output" == *'COMMUNITY_SYMBOLS=FIRST,CHILD'* ]] || exit 1
     [[ "$output" == *'COMMUNITY_WEIGHTS=100,200'* ]] || exit 1
+    [[ "$output" == *'CATEGORY_WEIGHTS=1:1:1:1'* ]] || exit 1
     [ ! -e "$network_path/burn.proposed.params" ]
 )
 
@@ -244,6 +275,10 @@ assert_fails_with \
     '00_init rejects dynamic start round' \
     'START_ROUND must be an explicit non-negative integer' \
     invalid_start_round
+assert_fails_with \
+    '00_init rejects malformed category weights' \
+    'CATEGORY_WEIGHTS must contain four positive integers separated by :' \
+    invalid_category_weights
 assert_succeeds '00_init resolves Launch token symbols' resolve_symbols
 assert_fails_with \
     '00_init rejects symbols not issued by Launch' \

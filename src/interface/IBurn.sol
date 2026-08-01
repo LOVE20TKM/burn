@@ -6,6 +6,12 @@ struct CommunityWeight {
     uint256 weight;
 }
 
+struct BurnRoundConfig {
+    uint256 startRound;
+    uint256 roundCount;
+    uint256 quotaMultiplier;
+}
+
 struct ActionRewardBurnRequest {
     address tokenAddress;
     uint256 actionId;
@@ -129,6 +135,7 @@ interface IBurnErrors {
     error InvalidAirdropToken(address tokenAddress);
     error InvalidRoundCount();
     error InvalidQuotaMultiplier();
+    error InvalidCategoryWeights();
     error StartRoundTooEarly(uint256 currentVerifyRound, uint256 startRound);
     error DuplicateExtensionFactory(address factory);
     error InvalidCommunityConfig(string tokenSymbol);
@@ -155,6 +162,10 @@ interface IBurn is IBurnEvents, IBurnErrors {
     function roundCount() external view returns (uint256);
     function endRound() external view returns (uint256);
     function quotaMultiplier() external view returns (uint256);
+    function slTokenLockWeight() external view returns (uint256);
+    function stTokenLockWeight() external view returns (uint256);
+    function govRewardBurnWeight() external view returns (uint256);
+    function actionRewardBurnWeight() external view returns (uint256);
     function totalCommunityWeight() external view returns (uint256);
     function remainingAirdropShare() external view returns (uint256);
 

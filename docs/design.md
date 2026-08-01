@@ -35,14 +35,22 @@ struct CommunityWeight {
     uint256 weight;
 }
 
+struct BurnRoundConfig {
+    uint256 startRound;
+    uint256 roundCount;
+    uint256 quotaMultiplier;
+}
+
 constructor(
     address extensionCenterAddress,
     string memory scopeTokenSymbol,
     address airdropTokenAddress,
     CommunityWeight[] memory communityWeights,
-    uint256 startRound,
-    uint256 roundCount,
-    uint256 quotaMultiplier,
+    uint256 slTokenLockWeight,
+    uint256 stTokenLockWeight,
+    uint256 govRewardBurnWeight,
+    uint256 actionRewardBurnWeight,
+    BurnRoundConfig memory roundConfig,
     address[] memory supportedExtensionFactories
 )
 ```
@@ -55,10 +63,11 @@ constructor(
 - `communityWeights` 不得为空，范围代币必须出现且只能出现一次。
 - 每项 `weight > 0`，symbol 经 Launch 解析后的代币地址不得重复；范围代币以外的代币必须是已经完成发射的直接子币。
 - 权重是无单位的正整数相对值，Burn 只保存并按比例使用，不定义其链下计算方法。
-- `roundCount > 0`。
-- `quotaMultiplier > 0`，使用整数，例如 `5` 表示五倍。
-- `startRound >= LOVE20Verify.currentRound()`。
-- `endRound = startRound + roundCount - 1`，溢出则部署回滚。
+- `slTokenLockWeight`、`stTokenLockWeight`、`govRewardBurnWeight`、`actionRewardBurnWeight` 都必须为正整数，分别冻结四类资产的相对权重。
+- `roundConfig.roundCount > 0`。
+- `roundConfig.quotaMultiplier > 0`，使用整数，例如 `5` 表示五倍。
+- `roundConfig.startRound >= LOVE20Verify.currentRound()`。
+- `endRound = roundConfig.startRound + roundConfig.roundCount - 1`，溢出则部署回滚。
 - Factory 不得为零地址或重复；空数组合法，表示仅支持基础 Mint 行动。
 
 ExtensionCenter 是唯一协议地址入口。Burn 从其不可变 getter 获取 Launch、Stake、Vote、Verify 和 Mint 等地址，不再接受这些地址的独立配置。实现可以缓存频繁使用的派生地址为 immutable，但不能形成第二套可配置来源。
@@ -74,6 +83,10 @@ startRound()
 roundCount()
 endRound()
 quotaMultiplier()
+slTokenLockWeight()
+stTokenLockWeight()
+govRewardBurnWeight()
+actionRewardBurnWeight()
 supportedExtensionFactories()
 isSupportedExtensionFactory(factory)
 ```
@@ -152,14 +165,14 @@ finalized = LOVE20Verify.currentRound() > endRound + 1
 
 ## 5. 销毁类别与份额
 
-四个类别的基础权重相同：
+四个类别的基础权重由四个独立构造参数冻结，当前部署参数可以使用 `1:1:1:1`：
 
-| 类别               | 资产处理               | 基础份额 |
-| ------------------ | ---------------------- | -------: |
-| `SLTokenLock`      | 永久锁定流动性质押凭证 |      25% |
-| `STTokenLock`      | 永久锁定加速质押凭证   |      25% |
-| `GovRewardBurn`    | 真实销毁治理激励代币   |      25% |
-| `ActionRewardBurn` | 真实销毁行动激励代币   |      25% |
+| 类别               | 资产处理               | 构造字段                   |
+| ------------------ | ---------------------- | -------------------------- |
+| `SLTokenLock`      | 永久锁定流动性质押凭证 | `slTokenLockWeight`        |
+| `STTokenLock`      | 永久锁定加速质押凭证   | `stTokenLockWeight`        |
+| `GovRewardBurn`    | 真实销毁治理激励代币   | `govRewardBurnWeight`      |
+| `ActionRewardBurn` | 真实销毁行动激励代币   | `actionRewardBurnWeight`   |
 
 某一类别在该社区的整个销毁周期内累计总得分大于零时，该类别为活跃类别。社区至少有一个活跃类别时为活跃社区。
 
@@ -179,13 +192,17 @@ communityShare = floor(
 
 ### 5.2 类别重新归一化
 
-因为四类基础权重相同，社区份额在活跃类别之间等分：
+社区份额只在活跃类别之间按构造时冻结的基础权重重新归一化：
 
 ```text
-categoryShare = floor(communityShare / activeCategoryCount)
+activeCategoryWeight = 所有活跃类别的冻结权重之和
+
+categoryShare = floor(
+    communityShare * categoryWeight / activeCategoryWeight
+)
 ```
 
-四、三、二、一个活跃类别时，各活跃类别分别得到社区份额的 `1/4`、`1/3`、`1/2`、全部。
+`1:1:1:1` 时保持原有等分结果；非等权配置按相对权重分配，无人参与的类别不计入分母。
 
 ### 5.3 地址份额
 
@@ -679,7 +696,8 @@ error NoClaimableAirdrop();
 部署脚本对构造参数、依赖代码和外部接口等能够确定的输入检查必须 fail-closed：任何检查失败都累计失败数并以回滚或非零状态退出，不能只打印告警后继续返回成功。`scoreBase`、总权重、Factory 成员映射和部署事件由合约测试保障；部署后只记录派生值，不重复验证已经测试过的构造逻辑。空投代币行为、完整生命周期和目标链 gas 由自动化测试及本次发布的 fork 验收，不伪装成部署脚本能够自动证明的性质。
 
 部署入口从配置读取 `EXTENSION_CENTER`、`SCOPE_TOKEN_SYMBOL`、可选的
-`AIRDROP_TOKEN`、逗号分隔的 `COMMUNITY_SYMBOLS/COMMUNITY_WEIGHTS`、`START_ROUND`、
+`AIRDROP_TOKEN`、逗号分隔的 `COMMUNITY_SYMBOLS/COMMUNITY_WEIGHTS`、冒号分隔的四项
+`CATEGORY_WEIGHTS`、`START_ROUND`、
 `ROUND_COUNT`、`QUOTA_MULTIPLIER` 和可选的 `SUPPORTED_EXTENSION_FACTORIES`。`00_init.sh` 通过
 ExtensionCenter 指向的 Launch 将社区 symbol 解析为其发射的代币地址，再交给 `DeployBurn.s.sol` 部署并
 核对依赖代码、全部构造参数、社区顺序与权重、Factory 数组和代码及空投代币
@@ -703,7 +721,7 @@ ExtensionCenter 指向的 Launch 将社区 symbol 解析为其发射的代币地
 实现至少覆盖：
 
 1. 范围代币为根币或普通子币时，正确接受显式配置的范围代币及已完成发射直接子币，并拒绝空数组、缺少范围代币、零权重、重复代币、未完成发射代币、其他代币和更深层后代。
-2. `communityWeight` 与构造参数完全一致，`totalCommunityWeight` 正确求和；部署时的 SL、LP、储备和价格变化不影响链上冻结权重。
+2. `communityWeight` 和四个类别权重 getter 与构造参数完全一致，`totalCommunityWeight` 正确求和；部署时的 SL、LP、储备和价格变化不影响链上冻结权重。
 3. `isRoundOpen(round)` 在开始前、开始、最后和结束后边界正确，最后开放窗口后推进一次即最终确定。
 4. 部署时 `scoreBase` 冻结、所有轮次确定性 `scoreMultiplier`、最后一轮系数和 O(log n) 定点幂正确。
 5. 同轮拆单与合并得到相同累计得分。
@@ -711,7 +729,7 @@ ExtensionCenter 指向的 Launch 将社区 symbol 解析为其发射的代币地
 7. 治理与行动状态按显式 `round` 查询；激励只使用实际铸造量且排除 burnReward，额度跨轮失效，历史未使用额度仅展示；含二次分配的扩展仍将 claimant 的整笔 mintReward 作为其额度，recipient 不产生独立额度。
 8. 基础与扩展行动互斥，受支持 Factory 后续扩展可用，非受支持扩展不被调用。
 9. 行动批次混合社区、重复来源、零数量和中途失败的全量回滚行为正确；所有写入口传入过期、未来或交易执行时已切换的 `round` 均回滚。
-10. 活跃类别和活跃社区重新归一化、全局无人参与、所有舍入余量处理正确。
+10. 等权和非等权配置下，活跃类别和活跃社区重新归一化、全局无人参与、所有舍入余量处理正确。
 11. 四种事件字段、指定单轮、截止轮次与全周期累计值、参与地址去重、`limit == 0` 及分页边界正确；百轮连续检查点下写入保持 `O(1)`，截止轮次查询保持 `O(log k)` 并低于测试 gas 上限。
 12. 单地址四类明细之和等于 `accountTokenShare.total`，跨社区之和等于 `accountShare.share`，所有地址份额之和允许因向下取整小于 `1e18`。
 13. 零空投代币地址模式只提供份额且所有领取调用回滚；空投代币等于范围代币时部署回滚；同链模式只允许最终份额为正的地址成功领取一次。

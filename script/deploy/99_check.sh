@@ -18,6 +18,12 @@ check_equal "scopeTokenAddress" "$SCOPE_TOKEN" "$(cast_call "$burnAddress" "scop
 check_equal "airdropTokenAddress" "${AIRDROP_TOKEN:-0x0000000000000000000000000000000000000000}" "$(cast_call "$burnAddress" "airdropTokenAddress()(address)")" || ((failed++))
 check_equal "roundCount" "$ROUND_COUNT" "$(cast_call "$burnAddress" "roundCount()(uint256)")" || ((failed++))
 check_equal "quotaMultiplier" "$QUOTA_MULTIPLIER" "$(cast_call "$burnAddress" "quotaMultiplier()(uint256)")" || ((failed++))
+actual_category_weights="$(cast_call "$burnAddress" "slTokenLockWeight()(uint256)")"
+actual_category_weights="$actual_category_weights:$(cast_call "$burnAddress" "stTokenLockWeight()(uint256)")"
+actual_category_weights="$actual_category_weights:$(cast_call "$burnAddress" "govRewardBurnWeight()(uint256)")"
+actual_category_weights="$actual_category_weights:$(cast_call "$burnAddress" "actionRewardBurnWeight()(uint256)")"
+actual_category_weights=$(printf '%s' "$actual_category_weights" | sed 's/ \[[^]]*\]//g')
+check_equal "categoryWeights" "$CATEGORY_WEIGHTS" "$actual_category_weights" || ((failed++))
 
 actual_start=$(cast_call "$burnAddress" "startRound()(uint256)")
 actual_start="${actual_start%% *}"

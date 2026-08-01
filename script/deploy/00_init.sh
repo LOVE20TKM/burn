@@ -34,7 +34,7 @@ if [ ! -f "$network_dir/network.params" ] || [ ! -f "$network_dir/burn.params" ]
     return 1 2>/dev/null || exit 1
 fi
 
-unset EXTENSION_CENTER SCOPE_TOKEN_SYMBOL AIRDROP_TOKEN COMMUNITY_SYMBOLS COMMUNITY_WEIGHTS
+unset EXTENSION_CENTER SCOPE_TOKEN_SYMBOL AIRDROP_TOKEN COMMUNITY_SYMBOLS COMMUNITY_WEIGHTS CATEGORY_WEIGHTS
 unset SCOPE_TOKEN COMMUNITY_TOKENS
 unset START_ROUND ROUND_COUNT QUOTA_MULTIPLIER SUPPORTED_EXTENSION_FACTORIES
 
@@ -50,7 +50,7 @@ if [ -z "$RPC_URL" ] || [ -z "$CHAIN_ID" ] || [ "$actual_chain_id" != "$CHAIN_ID
     return 1 2>/dev/null || exit 1
 fi
 
-for name in EXTENSION_CENTER SCOPE_TOKEN_SYMBOL COMMUNITY_SYMBOLS COMMUNITY_WEIGHTS START_ROUND ROUND_COUNT QUOTA_MULTIPLIER; do
+for name in EXTENSION_CENTER SCOPE_TOKEN_SYMBOL COMMUNITY_SYMBOLS COMMUNITY_WEIGHTS CATEGORY_WEIGHTS START_ROUND ROUND_COUNT QUOTA_MULTIPLIER; do
     if [ -z "$(printenv "$name")" ]; then
         echo -e "\033[31mError:\033[0m $name is required in burn.params"
         return 1 2>/dev/null || exit 1
@@ -59,6 +59,11 @@ done
 
 if [[ ! "$START_ROUND" =~ ^[0-9]+$ ]]; then
     echo -e "\033[31mError:\033[0m START_ROUND must be an explicit non-negative integer"
+    return 1 2>/dev/null || exit 1
+fi
+
+if [[ ! "$CATEGORY_WEIGHTS" =~ ^[1-9][0-9]*(:[1-9][0-9]*){3}$ ]]; then
+    echo -e "\033[31mError:\033[0m CATEGORY_WEIGHTS must contain four positive integers separated by :"
     return 1 2>/dev/null || exit 1
 fi
 

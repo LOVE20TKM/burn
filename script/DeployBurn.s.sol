@@ -3,7 +3,7 @@ pragma solidity =0.8.17;
 
 import {Script} from "forge-std/Script.sol";
 import {Burn} from "../src/Burn.sol";
-import {CommunityWeight} from "../src/interface/IBurn.sol";
+import {CommunityWeight, BurnRoundConfig} from "../src/interface/IBurn.sol";
 import {IExtensionCenter} from "@extension/interface/IExtensionCenter.sol";
 import {ILOVE20Launch} from "@core/interfaces/ILOVE20Launch.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -14,6 +14,10 @@ struct BurnDeploymentConfig {
     string scopeTokenSymbol;
     address airdropTokenAddress;
     CommunityWeight[] communities;
+    uint256 slTokenLockWeight;
+    uint256 stTokenLockWeight;
+    uint256 govRewardBurnWeight;
+    uint256 actionRewardBurnWeight;
     uint256 startRound;
     uint256 roundCount;
     uint256 quotaMultiplier;
@@ -32,9 +36,11 @@ contract DeployBurn is Script {
             config.scopeTokenSymbol,
             config.airdropTokenAddress,
             config.communities,
-            config.startRound,
-            config.roundCount,
-            config.quotaMultiplier,
+            config.slTokenLockWeight,
+            config.stTokenLockWeight,
+            config.govRewardBurnWeight,
+            config.actionRewardBurnWeight,
+            BurnRoundConfig(config.startRound, config.roundCount, config.quotaMultiplier),
             config.supportedExtensionFactories
         );
         vm.stopBroadcast();
@@ -60,6 +66,12 @@ contract DeployBurn is Script {
         if (deployed.roundCount() != expected.roundCount) ++failures;
         if (deployed.endRound() != expected.startRound + expected.roundCount - 1) ++failures;
         if (deployed.quotaMultiplier() != expected.quotaMultiplier) ++failures;
+        if (
+            deployed.slTokenLockWeight() != expected.slTokenLockWeight
+                || deployed.stTokenLockWeight() != expected.stTokenLockWeight
+                || deployed.govRewardBurnWeight() != expected.govRewardBurnWeight
+                || deployed.actionRewardBurnWeight() != expected.actionRewardBurnWeight
+        ) ++failures;
         if (deployed.remainingAirdropShare() != WAD) ++failures;
 
         failures += _protocolAndCommunityFailureCount(deployed, expected);
@@ -116,13 +128,20 @@ contract DeployBurn is Script {
 
     function _readConfig() internal view returns (BurnDeploymentConfig memory config) {
         string[] memory symbols = vm.envString("COMMUNITY_SYMBOLS", ",");
-        uint256[] memory weights = vm.envUint("COMMUNITY_WEIGHTS", ",");
-        require(symbols.length == weights.length, "community length mismatch");
+        uint256[] memory communityWeights = vm.envUint("COMMUNITY_WEIGHTS", ",");
+        require(symbols.length == communityWeights.length, "community length mismatch");
 
         config.communities = new CommunityWeight[](symbols.length);
         for (uint256 i; i < symbols.length; ++i) {
-            config.communities[i] = CommunityWeight(symbols[i], weights[i]);
+            config.communities[i] = CommunityWeight(symbols[i], communityWeights[i]);
         }
+
+        uint256[] memory categoryWeights = vm.envUint("CATEGORY_WEIGHTS", ":");
+        require(categoryWeights.length == 4, "category weights must have four values");
+        config.slTokenLockWeight = categoryWeights[0];
+        config.stTokenLockWeight = categoryWeights[1];
+        config.govRewardBurnWeight = categoryWeights[2];
+        config.actionRewardBurnWeight = categoryWeights[3];
 
         config.extensionCenterAddress = vm.envAddress("EXTENSION_CENTER");
         config.scopeTokenSymbol = vm.envString("SCOPE_TOKEN_SYMBOL");

@@ -4,6 +4,7 @@ pragma solidity =0.8.17;
 import {
     IBurn,
     CommunityWeight,
+    BurnRoundConfig,
     CategoryStats,
     BurnStats,
     RewardBurnState,
@@ -58,6 +59,10 @@ contract Burn is IBurn, ReentrancyGuard {
     uint256 public immutable override roundCount;
     uint256 public immutable override endRound;
     uint256 public immutable override quotaMultiplier;
+    uint256 public immutable override slTokenLockWeight;
+    uint256 public immutable override stTokenLockWeight;
+    uint256 public immutable override govRewardBurnWeight;
+    uint256 public immutable override actionRewardBurnWeight;
 
     uint256 public override totalCommunityWeight;
     uint256 public override remainingAirdropShare = WAD;
@@ -93,20 +98,20 @@ contract Burn is IBurn, ReentrancyGuard {
         string memory scopeTokenSymbol_,
         address airdropTokenAddress_,
         CommunityWeight[] memory communityWeights,
-        uint256 startRound_,
-        uint256 roundCount_,
-        uint256 quotaMultiplier_,
+        uint256 slTokenLockWeight_,
+        uint256 stTokenLockWeight_,
+        uint256 govRewardBurnWeight_,
+        uint256 actionRewardBurnWeight_,
+        BurnRoundConfig memory roundConfig,
         address[] memory supportedExtensionFactories_
     ) {
         if (extensionCenterAddress == address(0)) revert ZeroAddress();
-        if (roundCount_ == 0) revert InvalidRoundCount();
-        if (quotaMultiplier_ == 0) revert InvalidQuotaMultiplier();
+        if (roundConfig.roundCount == 0) revert InvalidRoundCount();
+        if (roundConfig.quotaMultiplier == 0) revert InvalidQuotaMultiplier();
+        _validateCategoryWeights(slTokenLockWeight_, stTokenLockWeight_, govRewardBurnWeight_, actionRewardBurnWeight_);
 
         IExtensionCenter center = IExtensionCenter(extensionCenterAddress);
         ILOVE20Launch launch = ILOVE20Launch(center.launchAddress());
-        ILOVE20Mint mint = ILOVE20Mint(center.mintAddress());
-        ILOVE20Verify verify = ILOVE20Verify(center.verifyAddress());
-        ILOVE20Vote vote = ILOVE20Vote(center.voteAddress());
         address scopeTokenAddress_ = launch.tokenAddressBySymbol(scopeTokenSymbol_);
         if (!_isEndedLOVE20Token(launch, scopeTokenAddress_)) {
             revert InvalidScopeToken(scopeTokenSymbol_);
@@ -117,27 +122,46 @@ contract Burn is IBurn, ReentrancyGuard {
         ) {
             revert InvalidAirdropToken(airdropTokenAddress_);
         }
-        uint256 currentVerifyRound = verify.currentRound();
-        if (startRound_ < currentVerifyRound) {
-            revert StartRoundTooEarly(currentVerifyRound, startRound_);
+        uint256 currentVerifyRound = ILOVE20Verify(center.verifyAddress()).currentRound();
+        if (roundConfig.startRound < currentVerifyRound) {
+            revert StartRoundTooEarly(currentVerifyRound, roundConfig.startRound);
         }
 
         extensionCenter = extensionCenterAddress;
         scopeTokenSymbol = scopeTokenSymbol_;
         scopeTokenAddress = scopeTokenAddress_;
         airdropTokenAddress = airdropTokenAddress_;
-        startRound = startRound_;
-        roundCount = roundCount_;
-        endRound = startRound_ + roundCount_ - 1;
-        quotaMultiplier = quotaMultiplier_;
+        startRound = roundConfig.startRound;
+        roundCount = roundConfig.roundCount;
+        endRound = roundConfig.startRound + roundConfig.roundCount - 1;
+        quotaMultiplier = roundConfig.quotaMultiplier;
+        slTokenLockWeight = slTokenLockWeight_;
+        stTokenLockWeight = stTokenLockWeight_;
+        govRewardBurnWeight = govRewardBurnWeight_;
+        actionRewardBurnWeight = actionRewardBurnWeight_;
         _launch = launch;
-        _mint = mint;
-        _verify = verify;
-        _vote = vote;
+        _mint = ILOVE20Mint(center.mintAddress());
+        _verify = ILOVE20Verify(center.verifyAddress());
+        _vote = ILOVE20Vote(center.voteAddress());
         _center = center;
 
         _freezeCommunities(scopeTokenAddress_, communityWeights);
         _freezeExtensionFactories(supportedExtensionFactories_);
+    }
+
+    function _validateCategoryWeights(uint256 slWeight, uint256 stWeight, uint256 govWeight, uint256 actionWeight)
+        internal
+        pure
+    {
+        if (slWeight == 0 || stWeight == 0 || govWeight == 0 || actionWeight == 0) {
+            revert InvalidCategoryWeights();
+        }
+        uint256 total = slWeight;
+        if (stWeight > type(uint256).max - total) revert InvalidCategoryWeights();
+        total += stWeight;
+        if (govWeight > type(uint256).max - total) revert InvalidCategoryWeights();
+        total += govWeight;
+        if (actionWeight > type(uint256).max - total) revert InvalidCategoryWeights();
     }
 
     function _freezeCommunities(address scopeTokenAddress_, CommunityWeight[] memory communityWeights) internal {
@@ -338,7 +362,7 @@ contract Burn is IBurn, ReentrancyGuard {
                 ++i;
             }
         }
-        assembly {
+        assembly ("memory-safe") {
             mstore(states, included)
         }
     }
@@ -580,18 +604,39 @@ contract Burn is IBurn, ReentrancyGuard {
     {
         share.finalized = finalized;
         BurnStats storage communityStats = _communityBurnStats[tokenAddress];
-        uint256 activeCategories = _activeCategoryCount(communityStats);
-        if (activeWeight == 0 || activeCategories == 0) return share;
+        uint256 activeCategoryWeight = _activeCategoryWeight(communityStats);
+        if (activeWeight == 0 || activeCategoryWeight == 0) return share;
 
         uint256 communityShare = Math.mulDiv(_communityWeight[tokenAddress], WAD, activeWeight);
-        uint256 categoryShare = communityShare / activeCategories;
         BurnStats storage accountStats = _accountBurnStats[account][tokenAddress];
-        share.slTokenLock = _scoreShare(categoryShare, accountStats.slTokenLock.score, communityStats.slTokenLock.score);
-        share.stTokenLock = _scoreShare(categoryShare, accountStats.stTokenLock.score, communityStats.stTokenLock.score);
-        share.govRewardBurn =
-            _scoreShare(categoryShare, accountStats.govRewardBurn.score, communityStats.govRewardBurn.score);
-        share.actionRewardBurn =
-            _scoreShare(categoryShare, accountStats.actionRewardBurn.score, communityStats.actionRewardBurn.score);
+        share.slTokenLock = _weightedScoreShare(
+            communityShare,
+            slTokenLockWeight,
+            activeCategoryWeight,
+            accountStats.slTokenLock.score,
+            communityStats.slTokenLock.score
+        );
+        share.stTokenLock = _weightedScoreShare(
+            communityShare,
+            stTokenLockWeight,
+            activeCategoryWeight,
+            accountStats.stTokenLock.score,
+            communityStats.stTokenLock.score
+        );
+        share.govRewardBurn = _weightedScoreShare(
+            communityShare,
+            govRewardBurnWeight,
+            activeCategoryWeight,
+            accountStats.govRewardBurn.score,
+            communityStats.govRewardBurn.score
+        );
+        share.actionRewardBurn = _weightedScoreShare(
+            communityShare,
+            actionRewardBurnWeight,
+            activeCategoryWeight,
+            accountStats.actionRewardBurn.score,
+            communityStats.actionRewardBurn.score
+        );
         share.total = share.slTokenLock + share.stTokenLock + share.govRewardBurn + share.actionRewardBurn;
     }
 
@@ -599,7 +644,7 @@ contract Burn is IBurn, ReentrancyGuard {
         uint256 length = _communities.length;
         for (uint256 i; i < length;) {
             address tokenAddress = _communities[i];
-            if (_activeCategoryCount(_communityBurnStats[tokenAddress]) > 0) {
+            if (_activeCategoryWeight(_communityBurnStats[tokenAddress]) > 0) {
                 weight += _communityWeight[tokenAddress];
             }
             unchecked {
@@ -608,19 +653,22 @@ contract Burn is IBurn, ReentrancyGuard {
         }
     }
 
-    function _activeCategoryCount(BurnStats storage stats) internal view returns (uint256 count) {
-        if (stats.slTokenLock.score > 0) ++count;
-        if (stats.stTokenLock.score > 0) ++count;
-        if (stats.govRewardBurn.score > 0) ++count;
-        if (stats.actionRewardBurn.score > 0) ++count;
+    function _activeCategoryWeight(BurnStats storage stats) internal view returns (uint256 weight) {
+        if (stats.slTokenLock.score > 0) weight += slTokenLockWeight;
+        if (stats.stTokenLock.score > 0) weight += stTokenLockWeight;
+        if (stats.govRewardBurn.score > 0) weight += govRewardBurnWeight;
+        if (stats.actionRewardBurn.score > 0) weight += actionRewardBurnWeight;
     }
 
-    function _scoreShare(uint256 categoryShare, uint256 accountScore, uint256 communityScore)
-        internal
-        pure
-        returns (uint256)
-    {
+    function _weightedScoreShare(
+        uint256 communityShare,
+        uint256 categoryWeight,
+        uint256 activeCategoryWeight,
+        uint256 accountScore,
+        uint256 communityScore
+    ) internal pure returns (uint256) {
         if (accountScore == 0 || communityScore == 0) return 0;
+        uint256 categoryShare = Math.mulDiv(communityShare, categoryWeight, activeCategoryWeight);
         return Math.mulDiv(categoryShare, accountScore, communityScore);
     }
 
