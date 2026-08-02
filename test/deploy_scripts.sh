@@ -70,7 +70,10 @@ invalid_start_round() (
         'SCOPE_TOKEN_SYMBOL=FIRST' \
         'COMMUNITY_SYMBOLS=FIRST' \
         'COMMUNITY_WEIGHTS=1' \
-        'CATEGORY_WEIGHTS=1:1:1:1' \
+        'SL_TOKEN_LOCK_WEIGHT=1' \
+        'ST_TOKEN_LOCK_WEIGHT=1' \
+        'GOV_REWARD_BURN_WEIGHT=1' \
+        'ACTION_REWARD_BURN_WEIGHT=1' \
         'START_ROUND=current' \
         'ROUND_COUNT=3' \
         'QUOTA_MULTIPLIER=5' >"$network_path/burn.params"
@@ -87,7 +90,10 @@ invalid_start_round() (
 invalid_category_weights() (
     set +u
     cd "$REPO_ROOT" || exit 1
-    local category_weights=$1
+    local sl_weight=$1
+    local st_weight=$2
+    local gov_weight=$3
+    local action_weight=$4
     local network_name="invalid_category_weights_$$"
     local network_path="$REPO_ROOT/script/network/$network_name"
     mkdir -p "$network_path"
@@ -101,7 +107,10 @@ invalid_category_weights() (
         'SCOPE_TOKEN_SYMBOL=FIRST' \
         'COMMUNITY_SYMBOLS=FIRST' \
         'COMMUNITY_WEIGHTS=1' \
-        "CATEGORY_WEIGHTS=$category_weights" \
+        "SL_TOKEN_LOCK_WEIGHT=$sl_weight" \
+        "ST_TOKEN_LOCK_WEIGHT=$st_weight" \
+        "GOV_REWARD_BURN_WEIGHT=$gov_weight" \
+        "ACTION_REWARD_BURN_WEIGHT=$action_weight" \
         'START_ROUND=1' \
         'ROUND_COUNT=3' \
         'QUOTA_MULTIPLIER=5' >"$network_path/burn.params"
@@ -127,7 +136,10 @@ resolve_symbols() (
         'SCOPE_TOKEN_SYMBOL=FIRST' \
         'COMMUNITY_SYMBOLS=FIRST,CHILD' \
         'COMMUNITY_WEIGHTS=100,200' \
-        'CATEGORY_WEIGHTS=0:1:1:1' \
+        'SL_TOKEN_LOCK_WEIGHT=0' \
+        'ST_TOKEN_LOCK_WEIGHT=1' \
+        'GOV_REWARD_BURN_WEIGHT=1' \
+        'ACTION_REWARD_BURN_WEIGHT=1' \
         'START_ROUND=1' \
         'ROUND_COUNT=3' \
         'QUOTA_MULTIPLIER=5' >"$network_path/burn.params"
@@ -168,7 +180,10 @@ reject_unknown_symbol() (
         'SCOPE_TOKEN_SYMBOL=UNKNOWN' \
         'COMMUNITY_SYMBOLS=UNKNOWN' \
         'COMMUNITY_WEIGHTS=1' \
-        'CATEGORY_WEIGHTS=1:1:1:1' \
+        'SL_TOKEN_LOCK_WEIGHT=1' \
+        'ST_TOKEN_LOCK_WEIGHT=1' \
+        'GOV_REWARD_BURN_WEIGHT=1' \
+        'ACTION_REWARD_BURN_WEIGHT=1' \
         'START_ROUND=1' \
         'ROUND_COUNT=3' \
         'QUOTA_MULTIPLIER=5' >"$network_path/burn.params"
@@ -235,7 +250,10 @@ prepare_config() (
         'SCOPE_TOKEN_SYMBOL=' \
         'COMMUNITY_SYMBOLS=' \
         'COMMUNITY_WEIGHTS=' \
-        'CATEGORY_WEIGHTS=1:1:1:1' \
+        'SL_TOKEN_LOCK_WEIGHT=1' \
+        'ST_TOKEN_LOCK_WEIGHT=1' \
+        'GOV_REWARD_BURN_WEIGHT=1' \
+        'ACTION_REWARD_BURN_WEIGHT=1' \
         'START_ROUND=' \
         'ROUND_COUNT=' \
         'QUOTA_MULTIPLIER=' >"$network_path/burn.params"
@@ -268,7 +286,10 @@ prepare_config() (
     [[ "$output" == *'SCOPE_TOKEN_SYMBOL=FIRST'* ]] || exit 1
     [[ "$output" == *'COMMUNITY_SYMBOLS=FIRST,CHILD'* ]] || exit 1
     [[ "$output" == *'COMMUNITY_WEIGHTS=100,200'* ]] || exit 1
-    [[ "$output" == *'CATEGORY_WEIGHTS=1:1:1:1'* ]] || exit 1
+    [[ "$output" == *'SL_TOKEN_LOCK_WEIGHT=1'* ]] || exit 1
+    [[ "$output" == *'ST_TOKEN_LOCK_WEIGHT=1'* ]] || exit 1
+    [[ "$output" == *'GOV_REWARD_BURN_WEIGHT=1'* ]] || exit 1
+    [[ "$output" == *'ACTION_REWARD_BURN_WEIGHT=1'* ]] || exit 1
     [ ! -e "$network_path/burn.proposed.params" ]
 )
 
@@ -277,13 +298,13 @@ assert_fails_with \
     'START_ROUND must be an explicit non-negative integer' \
     invalid_start_round
 assert_fails_with \
-    '00_init rejects malformed category weights' \
-    'CATEGORY_WEIGHTS must contain four non-negative integers separated by :' \
-    invalid_category_weights '1:1:1'
+    '00_init rejects malformed category weight' \
+    'SL_TOKEN_LOCK_WEIGHT must be a non-negative integer' \
+    invalid_category_weights invalid 1 1 1
 assert_fails_with \
     '00_init rejects all-zero category weights' \
-    'CATEGORY_WEIGHTS must contain at least one positive integer' \
-    invalid_category_weights '0:0:0:0'
+    'At least one category weight must be positive' \
+    invalid_category_weights 0 0 0 0
 assert_succeeds '00_init resolves Launch token symbols' resolve_symbols
 assert_fails_with \
     '00_init rejects symbols not issued by Launch' \

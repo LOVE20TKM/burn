@@ -136,12 +136,10 @@ contract DeployBurn is Script {
             config.communities[i] = CommunityWeight(symbols[i], communityWeights[i]);
         }
 
-        uint256[] memory categoryWeights = vm.envUint("CATEGORY_WEIGHTS", ":");
-        require(categoryWeights.length == 4, "category weights must have four values");
-        config.slTokenLockWeight = categoryWeights[0];
-        config.stTokenLockWeight = categoryWeights[1];
-        config.govRewardBurnWeight = categoryWeights[2];
-        config.actionRewardBurnWeight = categoryWeights[3];
+        config.slTokenLockWeight = vm.envUint("SL_TOKEN_LOCK_WEIGHT");
+        config.stTokenLockWeight = vm.envUint("ST_TOKEN_LOCK_WEIGHT");
+        config.govRewardBurnWeight = vm.envUint("GOV_REWARD_BURN_WEIGHT");
+        config.actionRewardBurnWeight = vm.envUint("ACTION_REWARD_BURN_WEIGHT");
 
         config.extensionCenterAddress = vm.envAddress("EXTENSION_CENTER");
         config.scopeTokenSymbol = vm.envString("SCOPE_TOKEN_SYMBOL");

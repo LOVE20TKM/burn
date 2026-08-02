@@ -34,7 +34,8 @@ if [ ! -f "$network_dir/network.params" ] || [ ! -f "$network_dir/burn.params" ]
     return 1 2>/dev/null || exit 1
 fi
 
-unset EXTENSION_CENTER SCOPE_TOKEN_SYMBOL AIRDROP_TOKEN COMMUNITY_SYMBOLS COMMUNITY_WEIGHTS CATEGORY_WEIGHTS
+unset EXTENSION_CENTER SCOPE_TOKEN_SYMBOL AIRDROP_TOKEN COMMUNITY_SYMBOLS COMMUNITY_WEIGHTS
+unset SL_TOKEN_LOCK_WEIGHT ST_TOKEN_LOCK_WEIGHT GOV_REWARD_BURN_WEIGHT ACTION_REWARD_BURN_WEIGHT
 unset SCOPE_TOKEN COMMUNITY_TOKENS
 unset START_ROUND ROUND_COUNT QUOTA_MULTIPLIER SUPPORTED_EXTENSION_FACTORIES
 
@@ -50,7 +51,7 @@ if [ -z "$RPC_URL" ] || [ -z "$CHAIN_ID" ] || [ "$actual_chain_id" != "$CHAIN_ID
     return 1 2>/dev/null || exit 1
 fi
 
-for name in EXTENSION_CENTER SCOPE_TOKEN_SYMBOL COMMUNITY_SYMBOLS COMMUNITY_WEIGHTS CATEGORY_WEIGHTS START_ROUND ROUND_COUNT QUOTA_MULTIPLIER; do
+for name in EXTENSION_CENTER SCOPE_TOKEN_SYMBOL COMMUNITY_SYMBOLS COMMUNITY_WEIGHTS SL_TOKEN_LOCK_WEIGHT ST_TOKEN_LOCK_WEIGHT GOV_REWARD_BURN_WEIGHT ACTION_REWARD_BURN_WEIGHT START_ROUND ROUND_COUNT QUOTA_MULTIPLIER; do
     if [ -z "$(printenv "$name")" ]; then
         echo -e "\033[31mError:\033[0m $name is required in burn.params"
         return 1 2>/dev/null || exit 1
@@ -62,13 +63,15 @@ if [[ ! "$START_ROUND" =~ ^[0-9]+$ ]]; then
     return 1 2>/dev/null || exit 1
 fi
 
-if [[ ! "$CATEGORY_WEIGHTS" =~ ^[0-9]+(:[0-9]+){3}$ ]]; then
-    echo -e "\033[31mError:\033[0m CATEGORY_WEIGHTS must contain four non-negative integers separated by :"
-    return 1 2>/dev/null || exit 1
-fi
+for name in SL_TOKEN_LOCK_WEIGHT ST_TOKEN_LOCK_WEIGHT GOV_REWARD_BURN_WEIGHT ACTION_REWARD_BURN_WEIGHT; do
+    if [[ ! "$(printenv "$name")" =~ ^[0-9]+$ ]]; then
+        echo -e "\033[31mError:\033[0m $name must be a non-negative integer"
+        return 1 2>/dev/null || exit 1
+    fi
+done
 
-if [[ "$CATEGORY_WEIGHTS" =~ ^0+:0+:0+:0+$ ]]; then
-    echo -e "\033[31mError:\033[0m CATEGORY_WEIGHTS must contain at least one positive integer"
+if [[ "$SL_TOKEN_LOCK_WEIGHT" =~ ^0+$ ]] && [[ "$ST_TOKEN_LOCK_WEIGHT" =~ ^0+$ ]] && [[ "$GOV_REWARD_BURN_WEIGHT" =~ ^0+$ ]] && [[ "$ACTION_REWARD_BURN_WEIGHT" =~ ^0+$ ]]; then
+    echo -e "\033[31mError:\033[0m At least one category weight must be positive"
     return 1 2>/dev/null || exit 1
 fi
 

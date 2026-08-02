@@ -696,8 +696,9 @@ error NoClaimableAirdrop();
 部署脚本对构造参数、依赖代码和外部接口等能够确定的输入检查必须 fail-closed：任何检查失败都累计失败数并以回滚或非零状态退出，不能只打印告警后继续返回成功。`scoreBase`、总权重、Factory 成员映射和部署事件由合约测试保障；部署后只记录派生值，不重复验证已经测试过的构造逻辑。空投代币行为、完整生命周期和目标链 gas 由自动化测试及本次发布的 fork 验收，不伪装成部署脚本能够自动证明的性质。
 
 部署入口从配置读取 `EXTENSION_CENTER`、`SCOPE_TOKEN_SYMBOL`、可选的
-`AIRDROP_TOKEN`、逗号分隔的 `COMMUNITY_SYMBOLS/COMMUNITY_WEIGHTS`、冒号分隔的四项
-`CATEGORY_WEIGHTS`、`START_ROUND`、
+`AIRDROP_TOKEN`、逗号分隔的 `COMMUNITY_SYMBOLS/COMMUNITY_WEIGHTS`、四项类别权重
+`SL_TOKEN_LOCK_WEIGHT`、`ST_TOKEN_LOCK_WEIGHT`、`GOV_REWARD_BURN_WEIGHT`、
+`ACTION_REWARD_BURN_WEIGHT`、`START_ROUND`、
 `ROUND_COUNT`、`QUOTA_MULTIPLIER` 和可选的 `SUPPORTED_EXTENSION_FACTORIES`。`00_init.sh` 通过
 ExtensionCenter 指向的 Launch 将社区 symbol 解析为其发射的代币地址，再交给 `DeployBurn.s.sol` 部署并
 核对依赖代码、全部构造参数、社区顺序与权重、Factory 数组和代码及空投代币
