@@ -108,6 +108,7 @@ contract BurnTest is Test {
         uint256 communityTotalAmount,
         uint256 communityTotalScore
     );
+    event AirdropClaimed(address indexed account, uint256 share, uint256 amount, uint256 remainingShare);
 
     function setUp() public {
         launch = new MockLaunch();
@@ -186,6 +187,104 @@ contract BurnTest is Test {
         assertEq(disabledCategoryBurn.actionRewardBurnWeight(), 1);
     }
 
+    function test_ConstructorRejectsInvalidScalarAndFactoryConfiguration() public {
+        vm.expectRevert(IBurnErrors.ZeroAddress.selector);
+        new Burn(
+            address(0), "SCOPE", address(0), _communityWeights(), 1, 1, 1, 1, _roundConfig(5, 3, 5), new address[](0)
+        );
+
+        vm.expectRevert(IBurnErrors.InvalidRoundCount.selector);
+        new Burn(
+            address(center),
+            "SCOPE",
+            address(0),
+            _communityWeights(),
+            1,
+            1,
+            1,
+            1,
+            _roundConfig(5, 0, 5),
+            new address[](0)
+        );
+
+        vm.expectRevert(IBurnErrors.InvalidQuotaMultiplier.selector);
+        new Burn(
+            address(center),
+            "SCOPE",
+            address(0),
+            _communityWeights(),
+            1,
+            1,
+            1,
+            1,
+            _roundConfig(5, 3, 0),
+            new address[](0)
+        );
+
+        verify.setCurrentRound(6);
+        vm.expectRevert(abi.encodeWithSelector(IBurnErrors.StartRoundTooEarly.selector, 6, 5));
+        new Burn(
+            address(center),
+            "SCOPE",
+            address(0),
+            _communityWeights(),
+            1,
+            1,
+            1,
+            1,
+            _roundConfig(5, 3, 5),
+            new address[](0)
+        );
+
+        verify.setCurrentRound(5);
+        MockExtensionFactory factory = new MockExtensionFactory();
+        address[] memory factories = new address[](1);
+        factories[0] = address(0);
+        vm.expectRevert(IBurnErrors.ZeroAddress.selector);
+        _deployBurnWithFactories(factories);
+
+        factories[0] = address(factory);
+        address[] memory duplicateFactories = new address[](2);
+        duplicateFactories[0] = address(factory);
+        duplicateFactories[1] = address(factory);
+        vm.expectRevert(abi.encodeWithSelector(IBurnErrors.DuplicateExtensionFactory.selector, address(factory)));
+        _deployBurnWithFactories(duplicateFactories);
+    }
+
+    function test_ConstructorHandlesFullAndInvalidSupply() public {
+        MockLOVE20Token fullSupplyToken =
+            new MockLOVE20Token("FULL", MAX_SUPPLY, MAX_SUPPLY, address(scopeToken), address(0x81), address(0x82));
+        launch.setToken(address(fullSupplyToken), address(scopeToken), true);
+        CommunityWeight[] memory fullSupplyWeights = new CommunityWeight[](1);
+        fullSupplyWeights[0] = CommunityWeight("FULL", 1);
+        Burn fullSupplyBurn = new Burn(
+            address(center), "FULL", address(0), fullSupplyWeights, 1, 1, 1, 1, _roundConfig(5, 3, 5), new address[](0)
+        );
+        assertEq(fullSupplyBurn.scoreBase(address(fullSupplyToken)), 1 ether);
+        assertEq(fullSupplyBurn.scoreMultiplier(address(fullSupplyToken), 5), 1 ether);
+        assertEq(fullSupplyBurn.scoreMultiplier(address(fullSupplyToken), 7), 1 ether);
+
+        MockLOVE20Token zeroSupplyToken =
+            new MockLOVE20Token("ZERO", 0, MAX_SUPPLY, address(scopeToken), address(0x83), address(0x84));
+        launch.setToken(address(zeroSupplyToken), address(scopeToken), true);
+        CommunityWeight[] memory zeroSupplyWeights = new CommunityWeight[](2);
+        zeroSupplyWeights[0] = CommunityWeight("SCOPE", 1);
+        zeroSupplyWeights[1] = CommunityWeight("ZERO", 1);
+        vm.expectRevert(abi.encodeWithSelector(IBurnErrors.InvalidScoreBase.selector, address(zeroSupplyToken)));
+        new Burn(
+            address(center), "SCOPE", address(0), zeroSupplyWeights, 1, 1, 1, 1, _roundConfig(5, 3, 5), new address[](0)
+        );
+
+        MockLOVE20Token overSupplyToken =
+            new MockLOVE20Token("OVER", MAX_SUPPLY + 1, MAX_SUPPLY, address(scopeToken), address(0x85), address(0x86));
+        launch.setToken(address(overSupplyToken), address(scopeToken), true);
+        zeroSupplyWeights[1] = CommunityWeight("OVER", 1);
+        vm.expectRevert(abi.encodeWithSelector(IBurnErrors.InvalidScoreBase.selector, address(overSupplyToken)));
+        new Burn(
+            address(center), "SCOPE", address(0), zeroSupplyWeights, 1, 1, 1, 1, _roundConfig(5, 3, 5), new address[](0)
+        );
+    }
+
     function test_DisabledCategoriesRejectOperations() public {
         Burn slDisabled = new Burn(
             address(center),
@@ -241,6 +340,9 @@ contract BurnTest is Test {
     }
 
     function test_RoundAndScoreMultiplierFollowVerifyClock() public {
+        verify.setCurrentRound(0);
+        assertFalse(burn.isRoundOpen(0));
+        verify.setCurrentRound(5);
         assertFalse(burn.isRoundOpen(5));
         assertEq(burn.scoreMultiplier(address(scopeToken), 4), 0);
         assertEq(burn.scoreMultiplier(address(scopeToken), 5), 1.036324 ether);
@@ -370,6 +472,9 @@ contract BurnTest is Test {
 
         assertEq(burn.accountRoundBurnStats(alice, address(scopeToken), 6).slTokenLock.amount, 0);
         assertEq(burn.accountRoundBurnStats(alice, address(scopeToken), 6).stTokenLock.amount, 4 ether);
+        BurnStats memory exactCommunityRound = burn.communityRoundBurnStats(address(scopeToken), 6);
+        assertEq(exactCommunityRound.slTokenLock.amount, 3 ether);
+        assertEq(exactCommunityRound.stTokenLock.amount, 4 ether);
     }
 
     function test_BurnStatsThroughRoundStaysEfficientWith128Rounds() public {
@@ -444,6 +549,45 @@ contract BurnTest is Test {
         assertEq(stats.stTokenLock.score, 0);
         assertEq(burn.participantsCount(), 0);
         assertFalse(burn.isParticipant(alice));
+    }
+
+    function test_AssetTransferFailuresRollBackStatsAndParticipation() public {
+        uint256 actionId = 35;
+        scopeSL.mint(alice, 1 ether);
+        scopeToken.transfer(alice, 2 ether);
+        mint.setGovReward(address(scopeToken), 5, alice, 1 ether, 0, 0, true);
+        mint.setActionReward(address(scopeToken), 5, actionId, alice, 1 ether, true);
+        vote.setVotedActionId(address(scopeToken), 5, actionId);
+        verify.setCurrentRound(6);
+
+        vm.startPrank(alice);
+        vm.expectRevert();
+        burn.lockSLToken(address(scopeToken), 5, 1 ether);
+        vm.expectRevert();
+        burn.burnGovRewardToken(address(scopeToken), 5, 1 ether);
+        ActionRewardBurnRequest[] memory requests = new ActionRewardBurnRequest[](1);
+        requests[0] = ActionRewardBurnRequest(address(scopeToken), actionId, 1 ether);
+        vm.expectRevert();
+        burn.burnActionRewardTokens(5, requests);
+        vm.stopPrank();
+
+        BurnStats memory accountStats = burn.accountBurnStats(alice, address(scopeToken));
+        BurnStats memory communityStats = burn.communityBurnStats(address(scopeToken));
+        assertEq(accountStats.slTokenLock.amount, 0);
+        assertEq(accountStats.govRewardBurn.amount, 0);
+        assertEq(accountStats.actionRewardBurn.amount, 0);
+        assertEq(communityStats.slTokenLock.amount, 0);
+        assertEq(communityStats.govRewardBurn.amount, 0);
+        assertEq(communityStats.actionRewardBurn.amount, 0);
+        assertEq(scopeToken.balanceOf(alice), 2 ether);
+        assertEq(scopeToken.totalSupply(), INITIAL_SUPPLY);
+        assertEq(burn.participantsCount(), 0);
+        assertFalse(burn.isParticipant(alice));
+
+        ActionRewardBurnState[] memory states = burn.actionRewardBurnStates(alice, address(scopeToken), 5);
+        assertEq(states.length, 1);
+        assertEq(states[0].reward.burnedAmount, 0);
+        assertEq(states[0].reward.unusedQuotaAmount, 5 ether);
     }
 
     function test_SLTokenLockedEventContainsOperationAndLifetimeTotals() public {
@@ -559,6 +703,36 @@ contract BurnTest is Test {
             burn.accountRoundBurnStats(bob, address(scopeToken), 5).slTokenLock.score
         );
         assertEq(burn.participantsCount(), 2);
+        assertEq(burn.participants(0, 1)[0], alice);
+        assertEq(burn.participants(1, 1)[0], bob);
+        assertEq(burn.participants(0, 10).length, 2);
+    }
+
+    function testFuzz_SplitAndSingleLockProduceSameScore(uint64 firstAmount, uint64 secondAmount) public {
+        vm.assume(firstAmount > 0 && secondAmount > 0);
+        uint256 total = uint256(firstAmount) + uint256(secondAmount);
+        scopeSL.mint(alice, total);
+        scopeSL.mint(bob, total);
+        verify.setCurrentRound(6);
+
+        vm.startPrank(alice);
+        scopeSL.approve(address(burn), type(uint256).max);
+        burn.lockSLToken(address(scopeToken), 5, firstAmount);
+        burn.lockSLToken(address(scopeToken), 5, secondAmount);
+        vm.stopPrank();
+
+        vm.startPrank(bob);
+        scopeSL.approve(address(burn), type(uint256).max);
+        burn.lockSLToken(address(scopeToken), 5, total);
+        vm.stopPrank();
+
+        uint256 splitScore = burn.accountRoundBurnStats(alice, address(scopeToken), 5).slTokenLock.score;
+        uint256 singleScore = burn.accountRoundBurnStats(bob, address(scopeToken), 5).slTokenLock.score;
+        assertEq(splitScore, singleScore);
+
+        (uint256 aliceShare,) = burn.accountShare(alice);
+        (uint256 bobShare,) = burn.accountShare(bob);
+        assertLe(aliceShare + bobShare, 1 ether);
     }
 
     function test_GovRewardBurnUsesOnlyActualMintedRewardQuota() public {
@@ -674,6 +848,7 @@ contract BurnTest is Test {
         center.setExtension(address(scopeToken), unsupportedActionId, address(unsupportedReward), address(0xBAD));
         vote.setVotedActionId(address(scopeToken), 5, supportedActionId);
         vote.setVotedActionId(address(scopeToken), 5, unsupportedActionId);
+        mint.setActionReward(address(scopeToken), 5, supportedActionId, alice, 999 ether, true);
         reward.setReward(5, alice, 40 ether, 10 ether, true);
         scopeToken.transfer(alice, 200 ether);
         verify.setCurrentRound(6);
@@ -693,10 +868,55 @@ contract BurnTest is Test {
         assertEq(states[0].reward.burnQuotaAmount, 200 ether);
         assertEq(states[0].reward.burnedAmount, 200 ether);
 
+        requests[0].amount = 1 ether;
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IBurnErrors.BurnQuotaExceeded.selector, 0, 1 ether));
+        extensionBurn.burnActionRewardTokens(5, requests);
+        vm.prank(bob);
+        vm.expectRevert(IBurnErrors.NoClaimedReward.selector);
+        extensionBurn.burnActionRewardTokens(5, requests);
+
         requests[0] = ActionRewardBurnRequest(address(scopeToken), unsupportedActionId, 1 ether);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(IBurnErrors.UnsupportedExtensionFactory.selector, address(0xBAD)));
         extensionBurn.burnActionRewardTokens(5, requests);
+    }
+
+    function test_ActionRewardStatesExposeUnclaimedRewardsAndFilterUnsupported() public {
+        MockExtensionFactory factory = new MockExtensionFactory();
+        MockReward reward = new MockReward();
+        MockRevertingReward unsupportedReward = new MockRevertingReward();
+        address[] memory factories = new address[](1);
+        factories[0] = address(factory);
+        Burn stateBurn = _deployBurnWithFactories(factories);
+
+        uint256 baseActionId = 30;
+        uint256 extensionActionId = 31;
+        uint256 emptyActionId = 32;
+        uint256 unsupportedActionId = 33;
+        center.setExtension(address(scopeToken), extensionActionId, address(reward), address(factory));
+        center.setExtension(address(scopeToken), unsupportedActionId, address(unsupportedReward), address(0xBAD));
+        vote.setVotedActionId(address(scopeToken), 5, baseActionId);
+        vote.setVotedActionId(address(scopeToken), 5, extensionActionId);
+        vote.setVotedActionId(address(scopeToken), 5, emptyActionId);
+        vote.setVotedActionId(address(scopeToken), 5, unsupportedActionId);
+        mint.setActionReward(address(scopeToken), 5, baseActionId, alice, 7 ether, false);
+        reward.setReward(5, alice, 11 ether, 4 ether, false);
+
+        assertTrue(stateBurn.isSupportedExtensionFactory(address(factory)));
+        assertFalse(stateBurn.isSupportedExtensionFactory(address(0xBAD)));
+
+        ActionRewardBurnState[] memory states = stateBurn.actionRewardBurnStates(alice, address(scopeToken), 5);
+        assertEq(states.length, 2);
+        assertEq(states[0].actionId, baseActionId);
+        assertEq(states[0].extensionAddress, address(0));
+        assertEq(states[0].reward.claimableRewardAmount, 7 ether);
+        assertFalse(states[0].reward.isClaimed);
+        assertEq(states[1].actionId, extensionActionId);
+        assertEq(states[1].extensionAddress, address(reward));
+        assertEq(states[1].reward.claimableRewardAmount, 11 ether);
+        assertFalse(states[1].reward.isClaimed);
+        assertEq(stateBurn.actionRewardBurnStates(alice, address(scopeToken), 4).length, 0);
     }
 
     function test_SharesRenormalizeByActiveCommunityCategoryAndScore() public {
@@ -845,6 +1065,9 @@ contract BurnTest is Test {
         assertFalse(pendingState.shareFinalized);
         assertEq(pendingState.share, 0.2 ether);
         assertEq(pendingState.claimableAmount, 0);
+        vm.prank(alice);
+        vm.expectRevert(IBurnErrors.ShareNotFinalized.selector);
+        airdropBurn.claimAirdrop();
 
         airdropToken.mint(address(airdropBurn), 1_000 ether);
         verify.setCurrentRound(9);
@@ -854,8 +1077,11 @@ contract BurnTest is Test {
         assertEq(aliceState.share, 0.2 ether);
         assertEq(aliceState.claimableAmount, 200 ether);
 
-        vm.prank(alice);
+        vm.startPrank(alice);
+        vm.expectEmit(true, false, false, true, address(airdropBurn));
+        emit AirdropClaimed(alice, 0.2 ether, 200 ether, 0.8 ether);
         assertEq(airdropBurn.claimAirdrop(), 200 ether);
+        vm.stopPrank();
         assertEq(airdropToken.balanceOf(alice), 200 ether);
         assertEq(airdropBurn.remainingAirdropShare(), 0.8 ether);
         assertTrue(airdropBurn.accountAirdropState(alice).isClaimed);
@@ -1147,6 +1373,17 @@ contract BurnTest is Test {
         config.extensionCenterAddress = address(otherCenter);
         assertGt(deployer.validationFailureCount(burn, config), 0);
         config.extensionCenterAddress = address(center);
+        config.airdropTokenAddress = address(childToken);
+        assertGt(deployer.validationFailureCount(burn, config), 0);
+        config.airdropTokenAddress = address(0);
+
+        MockExtensionFactory factory = new MockExtensionFactory();
+        Burn factoryBurn = _deployBurnWithFactories(_singleFactory(address(factory)));
+        BurnDeploymentConfig memory factoryConfig = _deploymentConfig(address(0));
+        factoryConfig.supportedExtensionFactories = _singleFactory(address(factory));
+        assertEq(deployer.validationFailureCount(factoryBurn, factoryConfig), 0);
+        factoryConfig.supportedExtensionFactories = _singleFactory(address(0xBAD));
+        assertGt(deployer.validationFailureCount(factoryBurn, factoryConfig), 0);
 
         scopeToken.mint(address(this), 1 ether);
         assertEq(deployer.validationFailureCount(burn, config), 0);
@@ -1247,6 +1484,11 @@ contract BurnTest is Test {
         weights = new CommunityWeight[](2);
         weights[0] = CommunityWeight("SCOPE", 600);
         weights[1] = CommunityWeight("CHILD", 400);
+    }
+
+    function _singleFactory(address factory) internal pure returns (address[] memory factories) {
+        factories = new address[](1);
+        factories[0] = factory;
     }
 
     function _roundConfig(uint256 start, uint256 count, uint256 quota) internal pure returns (BurnRoundConfig memory) {

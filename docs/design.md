@@ -63,7 +63,7 @@ constructor(
 - `communityWeights` 不得为空，范围代币必须出现且只能出现一次。
 - 每项 `weight > 0`，symbol 经 Launch 解析后的代币地址不得重复；范围代币以外的代币必须是已经完成发射的直接子币。
 - 权重是无单位的正整数相对值，Burn 只保存并按比例使用，不定义其链下计算方法。
-- `slTokenLockWeight`、`stTokenLockWeight`、`govRewardBurnWeight`、`actionRewardBurnWeight` 都必须为正整数，分别冻结四类资产的相对权重。
+- `slTokenLockWeight`、`stTokenLockWeight`、`govRewardBurnWeight`、`actionRewardBurnWeight` 为非负整数，且至少一项大于零；为零表示禁用对应类别，分别冻结四类资产的相对权重。
 - `roundConfig.roundCount > 0`。
 - `roundConfig.quotaMultiplier > 0`，使用整数，例如 `5` 表示五倍。
 - `roundConfig.startRound >= LOVE20Verify.currentRound()`。
