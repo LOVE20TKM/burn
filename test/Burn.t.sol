@@ -477,6 +477,48 @@ contract BurnTest is Test {
         assertEq(exactCommunityRound.stTokenLock.amount, 4 ether);
     }
 
+    function test_CommunityRoundBurnStatsHandlesRoundZeroAndSparseGaps() public {
+        verify.setCurrentRound(0);
+        Burn zeroRoundBurn = new Burn(
+            address(center),
+            "SCOPE",
+            address(0),
+            _communityWeights(),
+            1,
+            1,
+            1,
+            1,
+            _roundConfig(0, 3, 5),
+            new address[](0)
+        );
+
+        scopeSL.mint(alice, 2 ether);
+        scopeST.mint(alice, 1 ether);
+        vm.startPrank(alice);
+        scopeSL.approve(address(zeroRoundBurn), type(uint256).max);
+        scopeST.approve(address(zeroRoundBurn), type(uint256).max);
+        verify.setCurrentRound(1);
+        zeroRoundBurn.lockSLToken(address(scopeToken), 0, 1 ether);
+        verify.setCurrentRound(3);
+        zeroRoundBurn.lockSLToken(address(scopeToken), 2, 1 ether);
+        zeroRoundBurn.lockSTToken(address(scopeToken), 2, 1 ether);
+        vm.stopPrank();
+
+        BurnStats memory round0 = zeroRoundBurn.communityRoundBurnStats(address(scopeToken), 0);
+        assertEq(round0.slTokenLock.amount, 1 ether);
+        assertEq(round0.slTokenLock.score, 1.036324 ether);
+        assertEq(round0.stTokenLock.amount, 0);
+        assertEq(round0.stTokenLock.score, 0);
+
+        BurnStats memory gapRound = zeroRoundBurn.communityRoundBurnStats(address(scopeToken), 1);
+        assertEq(gapRound.slTokenLock.amount, 0);
+        assertEq(gapRound.slTokenLock.score, 0);
+
+        BurnStats memory round2 = zeroRoundBurn.communityRoundBurnStats(address(scopeToken), 2);
+        assertEq(round2.slTokenLock.amount, 1 ether);
+        assertEq(round2.slTokenLock.score, 1 ether);
+    }
+
     function test_BurnStatsThroughRoundStaysEfficientWith128Rounds() public {
         uint256 rounds = 128;
         Burn longBurn = new Burn(

@@ -81,13 +81,13 @@ contract Burn is IBurn, ReentrancyGuard {
     address[] internal _supportedExtensionFactories;
     mapping(address => bool) internal _isSupportedExtensionFactory;
 
-    mapping(address => mapping(address => mapping(uint256 => BurnStats))) internal _accountRoundBurnStats;
-    mapping(address => mapping(address => BurnStats)) internal _accountBurnStats;
+    mapping(address => mapping(address => mapping(uint256 => uint256[4]))) internal _accountRoundBurnAmounts;
     mapping(address => mapping(address => BurnStatsHistory)) internal _accountBurnStatsHistory;
-    mapping(address => mapping(uint256 => BurnStats)) internal _communityRoundBurnStats;
-    mapping(address => BurnStats) internal _communityBurnStats;
     mapping(address => BurnStatsHistory) internal _communityBurnStatsHistory;
     mapping(address => mapping(address => mapping(uint256 => mapping(uint256 => uint256)))) internal _actionRewardBurned;
+
+    mapping(address => address) internal _slTokenAddress;
+    mapping(address => address) internal _stTokenAddress;
 
     address[] internal _participants;
     mapping(address => bool) internal _isParticipant;
@@ -166,6 +166,7 @@ contract Burn is IBurn, ReentrancyGuard {
 
     function _freezeCommunities(address scopeTokenAddress_, CommunityWeight[] memory communityWeights) internal {
         bool scopeCommunityFound;
+        uint256 totalWeight;
         uint256 rewardRatePerThousand = _mint.ROUND_REWARD_GOV_PER_THOUSAND() + _mint.ROUND_REWARD_ACTION_PER_THOUSAND();
         uint256 communityCount = communityWeights.length;
         for (uint256 i; i < communityCount;) {
@@ -202,7 +203,9 @@ contract Burn is IBurn, ReentrancyGuard {
             _communitySymbols.push(config.tokenSymbol);
             _communityWeight[tokenAddress] = config.weight;
             _scoreBase[tokenAddress] = scoreBase_;
-            totalCommunityWeight += config.weight;
+            if (slTokenLockWeight > 0) _slTokenAddress[tokenAddress] = token.slAddress();
+            if (stTokenLockWeight > 0) _stTokenAddress[tokenAddress] = token.stAddress();
+            totalWeight += config.weight;
 
             emit CommunityConfigFrozen(
                 tokenAddress, config.tokenSymbol, config.weight, scoreBase_, totalSupply, deploymentRoundReward
@@ -212,6 +215,7 @@ contract Burn is IBurn, ReentrancyGuard {
             }
         }
         if (!scopeCommunityFound) revert MissingScopeCommunity();
+        totalCommunityWeight = totalWeight;
     }
 
     function _freezeExtensionFactories(address[] memory supportedExtensionFactories_) internal {
@@ -257,13 +261,11 @@ contract Burn is IBurn, ReentrancyGuard {
 
     function isRoundOpen(uint256 round) public view override returns (bool) {
         uint256 currentVerifyRound = _verify.currentRound();
-        return currentVerifyRound > 0 && round >= startRound && round <= endRound && round == currentVerifyRound - 1;
+        return _isRoundOpen(round, currentVerifyRound);
     }
 
     function scoreMultiplier(address tokenAddress, uint256 round) public view override returns (uint256 multiplier) {
-        _requireCommunity(tokenAddress);
-        if (round < startRound || round > endRound) return 0;
-        return _powWad(_scoreBase[tokenAddress], endRound - round);
+        return _scoreMultiplier(_requireCommunity(tokenAddress), round);
     }
 
     function lockSLToken(address tokenAddress, uint256 round, uint256 amount) external override {
@@ -275,19 +277,19 @@ contract Burn is IBurn, ReentrancyGuard {
     }
 
     function burnGovRewardToken(address tokenAddress, uint256 round, uint256 amount) external override {
-        _validateOperation(tokenAddress, round, amount, govRewardBurnWeight);
+        uint256 multiplier = _validateOperation(tokenAddress, round, amount, govRewardBurnWeight);
         uint256 actualMintedReward = _mint.govRewardMintedByAccount(tokenAddress, round, msg.sender);
         if (actualMintedReward == 0) revert NoClaimedReward();
 
         uint256 quota = actualMintedReward * quotaMultiplier;
-        uint256 burned = _accountRoundBurnStats[msg.sender][tokenAddress][round].govRewardBurn.amount;
+        uint256 burned = _accountRoundBurnAmounts[msg.sender][tokenAddress][round][uint256(Category.GovRewardBurn)];
         uint256 unusedQuota = quota - burned;
         if (amount > unusedQuota) {
             revert BurnQuotaExceeded(unusedQuota, amount);
         }
 
-        (uint256 multiplier, uint256 operationScore) =
-            _recordBurnStats(msg.sender, tokenAddress, round, Category.GovRewardBurn, amount);
+        uint256 operationScore =
+            _recordBurnStats(msg.sender, tokenAddress, round, Category.GovRewardBurn, amount, multiplier);
         IERC20(tokenAddress).safeTransferFrom(msg.sender, address(this), amount);
         ILOVE20Token(tokenAddress).burn(amount);
         _addParticipant(msg.sender);
@@ -297,12 +299,15 @@ contract Burn is IBurn, ReentrancyGuard {
     function burnActionRewardTokens(uint256 round, ActionRewardBurnRequest[] calldata requests) external override {
         uint256 length = requests.length;
         if (length == 0) revert EmptyBatch();
+        if (actionRewardBurnWeight == 0) revert CategoryDisabled();
+        _requireOpenRound(round);
         for (uint256 i; i < length;) {
             _burnActionRewardToken(round, requests[i]);
             unchecked {
                 ++i;
             }
         }
+        _addParticipant(msg.sender);
     }
 
     function govRewardBurnState(address account, address tokenAddress, uint256 round)
@@ -314,9 +319,9 @@ contract Burn is IBurn, ReentrancyGuard {
         _requireCommunity(tokenAddress);
         if (round < startRound || round > endRound) return state;
 
-        (uint256 verifyReward, uint256 boostReward,,) = _mint.govRewardByAccount(tokenAddress, round, account);
         uint256 actualMintedReward = _mint.govRewardMintedByAccount(tokenAddress, round, account);
         if (actualMintedReward == 0) {
+            (uint256 verifyReward, uint256 boostReward,,) = _mint.govRewardByAccount(tokenAddress, round, account);
             state.claimableRewardAmount = verifyReward + boostReward;
             return state;
         }
@@ -324,7 +329,7 @@ contract Burn is IBurn, ReentrancyGuard {
         state.isClaimed = true;
         state.claimedRewardAmount = actualMintedReward;
         state.burnQuotaAmount = actualMintedReward * quotaMultiplier;
-        state.burnedAmount = _accountRoundBurnStats[account][tokenAddress][round].govRewardBurn.amount;
+        state.burnedAmount = _accountRoundBurnAmounts[account][tokenAddress][round][uint256(Category.GovRewardBurn)];
         state.unusedQuotaAmount = state.burnQuotaAmount - state.burnedAmount;
     }
 
@@ -428,8 +433,14 @@ contract Burn is IBurn, ReentrancyGuard {
         override
         returns (BurnStats memory)
     {
-        _requireCommunity(tokenAddress);
-        return _accountRoundBurnStats[account][tokenAddress][round];
+        uint256 multiplier = _scoreMultiplier(_requireCommunity(tokenAddress), round);
+        uint256[4] storage amounts = _accountRoundBurnAmounts[account][tokenAddress][round];
+        return BurnStats({
+            slTokenLock: _roundStats(amounts[uint256(Category.SLTokenLock)], multiplier),
+            stTokenLock: _roundStats(amounts[uint256(Category.STTokenLock)], multiplier),
+            govRewardBurn: _roundStats(amounts[uint256(Category.GovRewardBurn)], multiplier),
+            actionRewardBurn: _roundStats(amounts[uint256(Category.ActionRewardBurn)], multiplier)
+        });
     }
 
     function accountBurnStats(address account, address tokenAddress)
@@ -439,7 +450,7 @@ contract Burn is IBurn, ReentrancyGuard {
         returns (BurnStats memory)
     {
         _requireCommunity(tokenAddress);
-        return _accountBurnStats[account][tokenAddress];
+        return _latestBurnStats(_accountBurnStatsHistory[account][tokenAddress]);
     }
 
     function accountBurnStatsThroughRound(address account, address tokenAddress, uint256 round)
@@ -459,12 +470,16 @@ contract Burn is IBurn, ReentrancyGuard {
         returns (BurnStats memory)
     {
         _requireCommunity(tokenAddress);
-        return _communityRoundBurnStats[tokenAddress][round];
+        BurnStats memory throughRound = _burnStatsThroughRound(_communityBurnStatsHistory[tokenAddress], round);
+        if (round == 0) return throughRound;
+        return _subtractBurnStats(
+            throughRound, _burnStatsThroughRound(_communityBurnStatsHistory[tokenAddress], round - 1)
+        );
     }
 
     function communityBurnStats(address tokenAddress) external view override returns (BurnStats memory) {
         _requireCommunity(tokenAddress);
-        return _communityBurnStats[tokenAddress];
+        return _latestBurnStats(_communityBurnStatsHistory[tokenAddress]);
     }
 
     function communityBurnStatsThroughRound(address tokenAddress, uint256 round)
@@ -499,19 +514,20 @@ contract Burn is IBurn, ReentrancyGuard {
     }
 
     function _lockReceipt(address tokenAddress, uint256 round, uint256 amount, Category category) internal {
-        _validateOperation(
+        uint256 multiplier = _validateOperation(
             tokenAddress, round, amount, category == Category.SLTokenLock ? slTokenLockWeight : stTokenLockWeight
         );
-        (uint256 multiplier, uint256 operationScore) =
-            _recordBurnStats(msg.sender, tokenAddress, round, category, amount);
+        uint256 operationScore = _recordBurnStats(msg.sender, tokenAddress, round, category, amount, multiplier);
 
-        ILOVE20Token token = ILOVE20Token(tokenAddress);
-        address receiptToken = category == Category.SLTokenLock ? token.slAddress() : token.stAddress();
+        address receiptToken =
+            category == Category.SLTokenLock ? _slTokenAddress[tokenAddress] : _stTokenAddress[tokenAddress];
         IERC20(receiptToken).safeTransferFrom(msg.sender, tokenAddress, amount);
         _addParticipant(msg.sender);
 
-        CategoryStats memory accountTotal = _category(_accountBurnStats[msg.sender][tokenAddress], category);
-        CategoryStats memory communityTotal = _category(_communityBurnStats[tokenAddress], category);
+        CategoryStats memory accountTotal =
+            _latestCategoryStats(_categoryHistory(_accountBurnStatsHistory[msg.sender][tokenAddress], category));
+        CategoryStats memory communityTotal =
+            _latestCategoryStats(_categoryHistory(_communityBurnStatsHistory[tokenAddress], category));
 
         if (category == Category.SLTokenLock) {
             emit SLTokenLocked(
@@ -549,8 +565,10 @@ contract Burn is IBurn, ReentrancyGuard {
         uint256 multiplier,
         uint256 operationScore
     ) internal {
-        CategoryStats storage accountTotal = _accountBurnStats[msg.sender][tokenAddress].govRewardBurn;
-        CategoryStats storage communityTotal = _communityBurnStats[tokenAddress].govRewardBurn;
+        CategoryStats memory accountTotal =
+            _latestCategoryStats(_accountBurnStatsHistory[msg.sender][tokenAddress].govRewardBurn);
+        CategoryStats memory communityTotal =
+            _latestCategoryStats(_communityBurnStatsHistory[tokenAddress].govRewardBurn);
         emit GovRewardTokenBurned(
             tokenAddress,
             msg.sender,
@@ -567,7 +585,8 @@ contract Burn is IBurn, ReentrancyGuard {
 
     function _burnActionRewardToken(uint256 round, ActionRewardBurnRequest calldata request) internal {
         address tokenAddress = request.tokenAddress;
-        _validateOperation(tokenAddress, round, request.amount, actionRewardBurnWeight);
+        uint256 scoreBase_ = _requireCommunity(tokenAddress);
+        if (request.amount == 0) revert ZeroAmount();
 
         address extensionAddress = _center.extension(tokenAddress, request.actionId);
         uint256 actualMintedReward;
@@ -591,11 +610,11 @@ contract Burn is IBurn, ReentrancyGuard {
         }
         _actionRewardBurned[msg.sender][tokenAddress][round][request.actionId] = burned + request.amount;
 
-        (uint256 multiplier, uint256 operationScore) =
-            _recordBurnStats(msg.sender, tokenAddress, round, Category.ActionRewardBurn, request.amount);
+        uint256 multiplier = _scoreMultiplier(scoreBase_, round);
+        uint256 operationScore =
+            _recordBurnStats(msg.sender, tokenAddress, round, Category.ActionRewardBurn, request.amount, multiplier);
         IERC20(tokenAddress).safeTransferFrom(msg.sender, address(this), request.amount);
         ILOVE20Token(tokenAddress).burn(request.amount);
-        _addParticipant(msg.sender);
         _emitActionRewardBurned(request, round, extensionAddress, multiplier, operationScore);
     }
 
@@ -605,39 +624,44 @@ contract Burn is IBurn, ReentrancyGuard {
         returns (TokenShare memory share)
     {
         share.finalized = finalized;
-        BurnStats storage communityStats = _communityBurnStats[tokenAddress];
-        uint256 activeCategoryWeight = _activeCategoryWeight(communityStats);
+        BurnStatsHistory storage communityHistory = _communityBurnStatsHistory[tokenAddress];
+        uint256 communitySLScore = _latestCategoryScore(communityHistory.slTokenLock);
+        uint256 communitySTScore = _latestCategoryScore(communityHistory.stTokenLock);
+        uint256 communityGovScore = _latestCategoryScore(communityHistory.govRewardBurn);
+        uint256 communityActionScore = _latestCategoryScore(communityHistory.actionRewardBurn);
+        uint256 activeCategoryWeight =
+            _activeCategoryWeight(communitySLScore, communitySTScore, communityGovScore, communityActionScore);
         if (activeWeight == 0 || activeCategoryWeight == 0) return share;
 
         uint256 communityShare = Math.mulDiv(_communityWeight[tokenAddress], WAD, activeWeight);
-        BurnStats storage accountStats = _accountBurnStats[account][tokenAddress];
+        BurnStatsHistory storage accountHistory = _accountBurnStatsHistory[account][tokenAddress];
         share.slTokenLock = _weightedScoreShare(
             communityShare,
             slTokenLockWeight,
             activeCategoryWeight,
-            accountStats.slTokenLock.score,
-            communityStats.slTokenLock.score
+            _latestCategoryScore(accountHistory.slTokenLock),
+            communitySLScore
         );
         share.stTokenLock = _weightedScoreShare(
             communityShare,
             stTokenLockWeight,
             activeCategoryWeight,
-            accountStats.stTokenLock.score,
-            communityStats.stTokenLock.score
+            _latestCategoryScore(accountHistory.stTokenLock),
+            communitySTScore
         );
         share.govRewardBurn = _weightedScoreShare(
             communityShare,
             govRewardBurnWeight,
             activeCategoryWeight,
-            accountStats.govRewardBurn.score,
-            communityStats.govRewardBurn.score
+            _latestCategoryScore(accountHistory.govRewardBurn),
+            communityGovScore
         );
         share.actionRewardBurn = _weightedScoreShare(
             communityShare,
             actionRewardBurnWeight,
             activeCategoryWeight,
-            accountStats.actionRewardBurn.score,
-            communityStats.actionRewardBurn.score
+            _latestCategoryScore(accountHistory.actionRewardBurn),
+            communityActionScore
         );
         share.total = share.slTokenLock + share.stTokenLock + share.govRewardBurn + share.actionRewardBurn;
     }
@@ -646,7 +670,15 @@ contract Burn is IBurn, ReentrancyGuard {
         uint256 length = _communities.length;
         for (uint256 i; i < length;) {
             address tokenAddress = _communities[i];
-            if (_activeCategoryWeight(_communityBurnStats[tokenAddress]) > 0) {
+            BurnStatsHistory storage history = _communityBurnStatsHistory[tokenAddress];
+            if (
+                _activeCategoryWeight(
+                    _latestCategoryScore(history.slTokenLock),
+                    _latestCategoryScore(history.stTokenLock),
+                    _latestCategoryScore(history.govRewardBurn),
+                    _latestCategoryScore(history.actionRewardBurn)
+                ) > 0
+            ) {
                 weight += _communityWeight[tokenAddress];
             }
             unchecked {
@@ -655,11 +687,15 @@ contract Burn is IBurn, ReentrancyGuard {
         }
     }
 
-    function _activeCategoryWeight(BurnStats storage stats) internal view returns (uint256 weight) {
-        if (stats.slTokenLock.score > 0) weight += slTokenLockWeight;
-        if (stats.stTokenLock.score > 0) weight += stTokenLockWeight;
-        if (stats.govRewardBurn.score > 0) weight += govRewardBurnWeight;
-        if (stats.actionRewardBurn.score > 0) weight += actionRewardBurnWeight;
+    function _activeCategoryWeight(uint256 slScore, uint256 stScore, uint256 govScore, uint256 actionScore)
+        internal
+        view
+        returns (uint256 weight)
+    {
+        if (slScore > 0) weight += slTokenLockWeight;
+        if (stScore > 0) weight += stTokenLockWeight;
+        if (govScore > 0) weight += govRewardBurnWeight;
+        if (actionScore > 0) weight += actionRewardBurnWeight;
     }
 
     function _weightedScoreShare(
@@ -702,10 +738,10 @@ contract Burn is IBurn, ReentrancyGuard {
             return (state, true);
         }
 
-        (uint256 expectedReward,) = _mint.actionRewardByActionIdByAccount(tokenAddress, round, actionId, account);
         uint256 actualMintedReward = _mint.actionRewardMintedByAccount(tokenAddress, round, actionId, account);
         state.reward.burnedAmount = _actionRewardBurned[account][tokenAddress][round][actionId];
         if (actualMintedReward == 0) {
+            (uint256 expectedReward,) = _mint.actionRewardByActionIdByAccount(tokenAddress, round, actionId, account);
             state.reward.claimableRewardAmount = expectedReward;
             return (state, true);
         }
@@ -723,8 +759,10 @@ contract Burn is IBurn, ReentrancyGuard {
         uint256 multiplier,
         uint256 operationScore
     ) internal {
-        CategoryStats storage accountTotal = _accountBurnStats[msg.sender][request.tokenAddress].actionRewardBurn;
-        CategoryStats storage communityTotal = _communityBurnStats[request.tokenAddress].actionRewardBurn;
+        CategoryStats memory accountTotal =
+            _latestCategoryStats(_accountBurnStatsHistory[msg.sender][request.tokenAddress].actionRewardBurn);
+        CategoryStats memory communityTotal =
+            _latestCategoryStats(_communityBurnStatsHistory[request.tokenAddress].actionRewardBurn);
         emit ActionRewardTokenBurned(
             request.tokenAddress,
             msg.sender,
@@ -741,52 +779,47 @@ contract Burn is IBurn, ReentrancyGuard {
         );
     }
 
-    function _recordBurnStats(address account, address tokenAddress, uint256 round, Category category, uint256 amount)
-        internal
-        returns (uint256 multiplier, uint256 operationScore)
-    {
-        multiplier = scoreMultiplier(tokenAddress, round);
-        CategoryStats storage accountRound = _category(_accountRoundBurnStats[account][tokenAddress][round], category);
-        uint256 newRoundAmount = accountRound.amount + amount;
+    function _recordBurnStats(
+        address account,
+        address tokenAddress,
+        uint256 round,
+        Category category,
+        uint256 amount,
+        uint256 multiplier
+    ) internal returns (uint256 operationScore) {
+        uint256[4] storage accountRoundAmounts = _accountRoundBurnAmounts[account][tokenAddress][round];
+        uint256 categoryIndex = uint256(category);
+        uint256 oldRoundAmount = accountRoundAmounts[categoryIndex];
+        uint256 newRoundAmount = oldRoundAmount + amount;
         uint256 newRoundScore = Math.mulDiv(newRoundAmount, multiplier, WAD);
-        operationScore = newRoundScore - accountRound.score;
-        accountRound.amount = newRoundAmount;
-        accountRound.score = newRoundScore;
+        operationScore = newRoundScore - Math.mulDiv(oldRoundAmount, multiplier, WAD);
+        accountRoundAmounts[categoryIndex] = newRoundAmount;
 
-        _increaseCategory(_communityRoundBurnStats[tokenAddress][round], category, amount, operationScore);
-        CategoryStats storage accountTotal =
-            _increaseCategory(_accountBurnStats[account][tokenAddress], category, amount, operationScore);
-        CategoryStats storage communityTotal =
-            _increaseCategory(_communityBurnStats[tokenAddress], category, amount, operationScore);
         _recordCategoryStats(
-            _categoryHistory(_accountBurnStatsHistory[account][tokenAddress], category), round, accountTotal
+            _categoryHistory(_accountBurnStatsHistory[account][tokenAddress], category), round, amount, operationScore
         );
         _recordCategoryStats(
-            _categoryHistory(_communityBurnStatsHistory[tokenAddress], category), round, communityTotal
+            _categoryHistory(_communityBurnStatsHistory[tokenAddress], category), round, amount, operationScore
         );
     }
 
-    function _increaseCategory(BurnStats storage stats, Category category, uint256 amount, uint256 score)
-        internal
-        returns (CategoryStats storage value)
-    {
-        value = _category(stats, category);
-        value.amount += amount;
-        value.score += score;
-    }
-
-    function _recordCategoryStats(CategoryStatsHistory storage history, uint256 round, CategoryStats storage total)
+    function _recordCategoryStats(CategoryStatsHistory storage history, uint256 round, uint256 amount, uint256 score)
         internal
     {
         uint256 length = history.changeRounds.length;
+        CategoryStats storage checkpoint = history.statsByRound[round];
         if (length == 0 || round > history.changeRounds[length - 1]) {
+            if (length > 0) {
+                CategoryStats storage previous = history.statsByRound[history.changeRounds[length - 1]];
+                checkpoint.amount = previous.amount;
+                checkpoint.score = previous.score;
+            }
             history.changeRounds.push(round);
         } else {
             assert(round == history.changeRounds[length - 1]);
         }
-        CategoryStats storage checkpoint = history.statsByRound[round];
-        checkpoint.amount = total.amount;
-        checkpoint.score = total.score;
+        checkpoint.amount += amount;
+        checkpoint.score += score;
     }
 
     function _burnStatsThroughRound(BurnStatsHistory storage history, uint256 round)
@@ -800,6 +833,23 @@ contract Burn is IBurn, ReentrancyGuard {
         stats.actionRewardBurn = _categoryStatsThroughRound(history.actionRewardBurn, round);
     }
 
+    function _latestBurnStats(BurnStatsHistory storage history) internal view returns (BurnStats memory stats) {
+        stats.slTokenLock = _latestCategoryStats(history.slTokenLock);
+        stats.stTokenLock = _latestCategoryStats(history.stTokenLock);
+        stats.govRewardBurn = _latestCategoryStats(history.govRewardBurn);
+        stats.actionRewardBurn = _latestCategoryStats(history.actionRewardBurn);
+    }
+
+    function _latestCategoryStats(CategoryStatsHistory storage history) internal view returns (CategoryStats memory) {
+        uint256 length = history.changeRounds.length;
+        return length == 0 ? CategoryStats(0, 0) : history.statsByRound[history.changeRounds[length - 1]];
+    }
+
+    function _latestCategoryScore(CategoryStatsHistory storage history) internal view returns (uint256) {
+        uint256 length = history.changeRounds.length;
+        return length == 0 ? 0 : history.statsByRound[history.changeRounds[length - 1]].score;
+    }
+
     function _categoryStatsThroughRound(CategoryStatsHistory storage history, uint256 round)
         internal
         view
@@ -809,15 +859,24 @@ contract Burn is IBurn, ReentrancyGuard {
         return found ? history.statsByRound[checkpointRound] : CategoryStats(0, 0);
     }
 
-    function _category(BurnStats storage stats, Category category)
+    function _subtractBurnStats(BurnStats memory value, BurnStats memory previous)
         internal
-        view
-        returns (CategoryStats storage value)
+        pure
+        returns (BurnStats memory)
     {
-        if (category == Category.SLTokenLock) return stats.slTokenLock;
-        if (category == Category.STTokenLock) return stats.stTokenLock;
-        if (category == Category.GovRewardBurn) return stats.govRewardBurn;
-        return stats.actionRewardBurn;
+        value.slTokenLock.amount -= previous.slTokenLock.amount;
+        value.slTokenLock.score -= previous.slTokenLock.score;
+        value.stTokenLock.amount -= previous.stTokenLock.amount;
+        value.stTokenLock.score -= previous.stTokenLock.score;
+        value.govRewardBurn.amount -= previous.govRewardBurn.amount;
+        value.govRewardBurn.score -= previous.govRewardBurn.score;
+        value.actionRewardBurn.amount -= previous.actionRewardBurn.amount;
+        value.actionRewardBurn.score -= previous.actionRewardBurn.score;
+        return value;
+    }
+
+    function _roundStats(uint256 amount, uint256 multiplier) internal pure returns (CategoryStats memory) {
+        return CategoryStats(amount, Math.mulDiv(amount, multiplier, WAD));
     }
 
     function _categoryHistory(BurnStatsHistory storage stats, Category category)
@@ -834,13 +893,27 @@ contract Burn is IBurn, ReentrancyGuard {
     function _validateOperation(address tokenAddress, uint256 round, uint256 amount, uint256 categoryWeight)
         internal
         view
+        returns (uint256 multiplier)
     {
-        _requireCommunity(tokenAddress);
+        uint256 scoreBase_ = _requireCommunity(tokenAddress);
         if (categoryWeight == 0) revert CategoryDisabled();
         if (amount == 0) revert ZeroAmount();
-        if (!isRoundOpen(round)) {
-            revert RoundNotOpen(round, _verify.currentRound());
-        }
+        _requireOpenRound(round);
+        return _scoreMultiplier(scoreBase_, round);
+    }
+
+    function _requireOpenRound(uint256 round) internal view {
+        uint256 currentVerifyRound = _verify.currentRound();
+        if (!_isRoundOpen(round, currentVerifyRound)) revert RoundNotOpen(round, currentVerifyRound);
+    }
+
+    function _isRoundOpen(uint256 round, uint256 currentVerifyRound) internal view returns (bool) {
+        return currentVerifyRound > 0 && round >= startRound && round <= endRound && round == currentVerifyRound - 1;
+    }
+
+    function _scoreMultiplier(uint256 scoreBase_, uint256 round) internal view returns (uint256) {
+        if (round < startRound || round > endRound) return 0;
+        return _powWad(scoreBase_, endRound - round);
     }
 
     function _addParticipant(address account) internal {
@@ -862,10 +935,9 @@ contract Burn is IBurn, ReentrancyGuard {
         }
     }
 
-    function _requireCommunity(address tokenAddress) internal view {
-        if (_communityWeight[tokenAddress] == 0) {
-            revert UnsupportedCommunity(tokenAddress);
-        }
+    function _requireCommunity(address tokenAddress) internal view returns (uint256 scoreBase_) {
+        scoreBase_ = _scoreBase[tokenAddress];
+        if (scoreBase_ == 0) revert UnsupportedCommunity(tokenAddress);
     }
 
     function _isEndedLOVE20Token(ILOVE20Launch launch, address tokenAddress) internal view returns (bool) {
