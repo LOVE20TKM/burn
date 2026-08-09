@@ -1,0 +1,3 @@
+# 从投票轮次派生销毁轮次
+
+Burn 的轮次编号与 LOVE20Mint 的激励轮次相同，因此代码中的单轮参数统一命名为 `round`。标准部署中 Vote 比 Verify 提前两个阶段，而激励轮次在 Verify 进入下一轮后可以铸造，所以 Burn 直接使用 `currentBurnRound = LOVE20Vote.currentRound() - 3`，不依赖 Verify 合约。构造函数的 `roundConfig` 使用 `startRound` 和大于零的 `roundCount` 定义销毁周期，并派生 `endRound = startRound + roundCount - 1`；三者均为 `public immutable`。`startRound` 是显式部署参数，部署工具不接受 `current`、`currentRound` 等动态别名；部署时要求 `startRound >= LOVE20Vote.currentRound() - 2`，为下一销毁轮次预留部署和验收时间。当 `LOVE20Vote.currentRound() > 2` 且 `round == currentBurnRound` 时，仅该轮开放销毁，旧轮次立即失效。`currentBurnRound == endRound` 是最后一个销毁开放窗口；Vote 再推进一轮时，统一份额查询的 `finalized` 变为 `true`。所有按轮次查询和全部写入口都显式接收 `round`，避免隐藏当前轮次以及跨轮延迟交易按新轮次执行；配置、全周期累计和份额查询不带轮次。

@@ -105,15 +105,13 @@ contract MockLaunch {
     }
 }
 
-contract MockVerify {
+contract MockVote {
     uint256 public currentRound;
 
     function setCurrentRound(uint256 round) external {
         currentRound = round;
     }
-}
 
-contract MockVote {
     mapping(address => mapping(uint256 => uint256[])) internal _actionIds;
 
     function setVotedActionId(address tokenAddress, uint256 round, uint256 actionId) external {

@@ -18,7 +18,6 @@ import {IReward} from "@extension/interface/IReward.sol";
 import {ILOVE20Launch, LaunchInfo} from "@core/interfaces/ILOVE20Launch.sol";
 import {ILOVE20Mint} from "@core/interfaces/ILOVE20Mint.sol";
 import {ILOVE20Token} from "@core/interfaces/ILOVE20Token.sol";
-import {ILOVE20Verify} from "@core/interfaces/ILOVE20Verify.sol";
 import {ILOVE20Vote} from "@core/interfaces/ILOVE20Vote.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -69,7 +68,6 @@ contract Burn is IBurn, ReentrancyGuard {
 
     ILOVE20Launch internal immutable _launch;
     ILOVE20Mint internal immutable _mint;
-    ILOVE20Verify internal immutable _verify;
     ILOVE20Vote internal immutable _vote;
     IExtensionCenter internal immutable _center;
 
@@ -112,6 +110,7 @@ contract Burn is IBurn, ReentrancyGuard {
 
         IExtensionCenter center = IExtensionCenter(extensionCenterAddress);
         ILOVE20Launch launch = ILOVE20Launch(center.launchAddress());
+        ILOVE20Vote vote = ILOVE20Vote(center.voteAddress());
         address scopeTokenAddress_ = launch.tokenAddressBySymbol(scopeTokenSymbol_);
         if (!_isEndedLOVE20Token(launch, scopeTokenAddress_)) {
             revert InvalidScopeToken(scopeTokenSymbol_);
@@ -122,9 +121,9 @@ contract Burn is IBurn, ReentrancyGuard {
         ) {
             revert InvalidAirdropToken(airdropTokenAddress_);
         }
-        uint256 currentVerifyRound = ILOVE20Verify(center.verifyAddress()).currentRound();
-        if (roundConfig.startRound < currentVerifyRound) {
-            revert StartRoundTooEarly(currentVerifyRound, roundConfig.startRound);
+        uint256 minimumStartRound = vote.currentRound() - 2;
+        if (roundConfig.startRound < minimumStartRound) {
+            revert StartRoundTooEarly(minimumStartRound, roundConfig.startRound);
         }
 
         extensionCenter = extensionCenterAddress;
@@ -141,8 +140,7 @@ contract Burn is IBurn, ReentrancyGuard {
         actionRewardBurnWeight = actionRewardBurnWeight_;
         _launch = launch;
         _mint = ILOVE20Mint(center.mintAddress());
-        _verify = ILOVE20Verify(center.verifyAddress());
-        _vote = ILOVE20Vote(center.voteAddress());
+        _vote = vote;
         _center = center;
 
         _freezeCommunities(scopeTokenAddress_, communityWeights);
@@ -260,8 +258,8 @@ contract Burn is IBurn, ReentrancyGuard {
     }
 
     function isRoundOpen(uint256 round) public view override returns (bool) {
-        uint256 currentVerifyRound = _verify.currentRound();
-        return _isRoundOpen(round, currentVerifyRound);
+        uint256 currentVoteRound = _vote.currentRound();
+        return currentVoteRound > 2 && _isRoundOpen(round, currentVoteRound - 3);
     }
 
     function scoreMultiplier(address tokenAddress, uint256 round) public view override returns (uint256 multiplier) {
@@ -711,8 +709,8 @@ contract Burn is IBurn, ReentrancyGuard {
     }
 
     function _isFinalized() internal view returns (bool) {
-        uint256 currentVerifyRound = _verify.currentRound();
-        return currentVerifyRound > endRound && currentVerifyRound - endRound > 1;
+        uint256 currentVoteRound = _vote.currentRound();
+        return currentVoteRound > 2 && currentVoteRound - 3 > endRound;
     }
 
     function _actionRewardBurnState(address account, address tokenAddress, uint256 round, uint256 actionId)
@@ -903,12 +901,15 @@ contract Burn is IBurn, ReentrancyGuard {
     }
 
     function _requireOpenRound(uint256 round) internal view {
-        uint256 currentVerifyRound = _verify.currentRound();
-        if (!_isRoundOpen(round, currentVerifyRound)) revert RoundNotOpen(round, currentVerifyRound);
+        uint256 currentVoteRound = _vote.currentRound();
+        uint256 currentBurnRound = currentVoteRound > 2 ? currentVoteRound - 3 : 0;
+        if (currentVoteRound <= 2 || !_isRoundOpen(round, currentBurnRound)) {
+            revert RoundNotOpen(round, currentBurnRound);
+        }
     }
 
-    function _isRoundOpen(uint256 round, uint256 currentVerifyRound) internal view returns (bool) {
-        return currentVerifyRound > 0 && round >= startRound && round <= endRound && round == currentVerifyRound - 1;
+    function _isRoundOpen(uint256 round, uint256 currentBurnRound) internal view returns (bool) {
+        return round >= startRound && round <= endRound && round == currentBurnRound;
     }
 
     function _scoreMultiplier(uint256 scoreBase_, uint256 round) internal view returns (uint256) {

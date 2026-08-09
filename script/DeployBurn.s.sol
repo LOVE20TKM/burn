@@ -104,8 +104,7 @@ contract DeployBurn is Script {
         address mintAddress = center.mintAddress();
         if (
             expected.extensionCenterAddress.code.length == 0 || center.launchAddress().code.length == 0
-                || center.voteAddress().code.length == 0 || center.verifyAddress().code.length == 0
-                || mintAddress.code.length == 0
+                || center.voteAddress().code.length == 0 || mintAddress.code.length == 0
         ) ++failures;
 
         address[] memory actualCommunities = deployed.communities();

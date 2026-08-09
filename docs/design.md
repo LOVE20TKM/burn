@@ -66,11 +66,11 @@ constructor(
 - `slTokenLockWeight`、`stTokenLockWeight`、`govRewardBurnWeight`、`actionRewardBurnWeight` 为非负整数，且至少一项大于零；为零表示禁用对应类别，分别冻结四类资产的相对权重。
 - `roundConfig.roundCount > 0`。
 - `roundConfig.quotaMultiplier > 0`，使用整数，例如 `5` 表示五倍。
-- `roundConfig.startRound >= LOVE20Verify.currentRound()`。
+- `roundConfig.startRound >= LOVE20Vote.currentRound() - 2`。
 - `endRound = roundConfig.startRound + roundConfig.roundCount - 1`，溢出则部署回滚。
 - Factory 不得为零地址或重复；空数组合法，表示仅支持基础 Mint 行动。
 
-ExtensionCenter 是唯一协议地址入口。Burn 从其不可变 getter 获取 Launch、Stake、Vote、Verify 和 Mint 等地址，不再接受这些地址的独立配置。实现可以缓存频繁使用的派生地址为 immutable，但不能形成第二套可配置来源。
+ExtensionCenter 是唯一协议地址入口。Burn 从其不可变 getter 获取 Launch、Vote 和 Mint 等地址，不再接受这些地址的独立配置。实现可以缓存频繁使用的派生地址为 immutable，但不能形成第二套可配置来源。
 
 以下配置通过公开 getter 或只读数组公开（`scoreBase` 和 `totalCommunityWeight` 为构造时派生值，非构造参数）：
 
@@ -132,36 +132,29 @@ totalCommunityWeight() returns (uint256)
 
 ## 4. 销毁周期
 
-Burn 轮次等于 LOVE20Mint 激励轮次。激励轮次 `R` 仅在：
+Burn 轮次等于 LOVE20Mint 激励轮次。标准部署中 Vote 比 Verify 提前两个阶段，而激励轮次 `R` 在 Verify 进入 `R + 1` 时可以铸造，因此：
 
 ```text
-LOVE20Verify.currentRound() == R + 1
-```
-
-时开放。因此当前激励轮次为：
-
-```text
-Verify.currentRound() == 0 时：round = 0，open = false
-否则：round = Verify.currentRound() - 1
+currentBurnRound = LOVE20Vote.currentRound() - 3
 ```
 
 开放条件：
 
 ```text
 open = startRound <= round <= endRound
-       且 Verify.currentRound() > 0
-       且 round == Verify.currentRound() - 1
+       且 LOVE20Vote.currentRound() > 2
+       且 round == currentBurnRound
 ```
 
 历史轮次不能补销毁，未使用额度跨轮失效。份额最终确定条件为：
 
 ```text
-finalized = LOVE20Verify.currentRound() > endRound + 1
+finalized = currentBurnRound > endRound
 ```
 
-`Verify.currentRound() == endRound + 1` 正是最后一个轮次的销毁开放窗口；Verify 再推进一次至 `endRound + 2` 时，份额立即最终确定。
+`LOVE20Vote.currentRound() == endRound + 3` 正是最后一个轮次的销毁开放窗口；Vote 再推进一次时，份额立即最终确定。
 
-不需要 `finalize()` 交易或结算事件。Verify 已进入正数轮次时，前端可默认选择 `Verify.currentRound() - 1`；Verify 仍为第 0 轮时默认选择 0。所有按轮次查询和全部写入口都显式传入 `round`；配置、全周期累计和份额查询不带轮次。
+不需要 `finalize()` 交易或结算事件。Vote 已进入第 3 轮时，前端可默认选择 `Vote.currentRound() - 3`；此前默认选择 0。所有按轮次查询和全部写入口都显式传入 `round`；配置、全周期累计和份额查询不带轮次。
 
 ## 5. 销毁类别与份额
 
@@ -376,7 +369,7 @@ function claimAirdrop() external returns (uint256 amount);
 function isRoundOpen(uint256 round) external view returns (bool);
 ```
 
-仅当 `startRound <= round <= endRound`、`Verify.currentRound() > 0` 且 `round == Verify.currentRound() - 1` 时返回 `true`。实现先检查 Verify 为正数再做减法，使任意查询参数都不会因 `round + 1` 溢出。前端仍可查询历史轮次状态，但只有返回 `true` 时才启用锁定和销毁交易。
+仅当 `startRound <= round <= endRound`、`Vote.currentRound() > 2` 且 `round == Vote.currentRound() - 3` 时返回 `true`。实现先检查 Vote 已进入第 3 轮再做减法，使任意查询参数都不会因 `round + 3` 溢出。前端仍可查询历史轮次状态，但只有返回 `true` 时才启用锁定和销毁交易。
 
 ### 9.2 治理与行动激励状态
 
@@ -637,7 +630,7 @@ error InvalidAirdropToken(address tokenAddress);
 error InvalidRoundCount();
 error InvalidQuotaMultiplier();
 error StartRoundTooEarly(
-    uint256 currentVerifyRound,
+    uint256 minimumStartRound,
     uint256 startRound
 );
 error DuplicateExtensionFactory(address factory);
@@ -646,7 +639,7 @@ error DuplicateCommunity(string tokenSymbol);
 error MissingScopeCommunity();
 error InvalidScoreBase(address tokenAddress);
 error UnsupportedCommunity(address tokenAddress);
-error RoundNotOpen(uint256 round, uint256 currentVerifyRound);
+error RoundNotOpen(uint256 round, uint256 currentBurnRound);
 error NoClaimedReward();
 error BurnQuotaExceeded(uint256 unusedQuotaAmount, uint256 requestedAmount);
 error UnsupportedExtensionFactory(address factory);
@@ -676,7 +669,7 @@ error NoClaimableAirdrop();
 
 部署前：
 
-1. 确认 ExtensionCenter 及其 Launch、Vote、Verify、Mint 等不可变地址正确。
+1. 确认 ExtensionCenter 及其 Launch、Vote、Mint 等不可变地址正确。
 2. 确认范围代币已经完成发射，逐项核对社区配置只包含范围代币和本次支持的已完成发射直接子币。
 3. 确定并复核每个社区的权重。权重计算方法由部署者决定；例如可以采用最近七个完整轮次中，SL 所对应范围代币数量的中位数，但这只是示例，不属于合约规则。
 4. 核对 `startRound`、`roundCount`、派生 `endRound` 和整数 `quotaMultiplier`；`START_ROUND` 必须在部署前确定为非负整数，不接受 `current`、`currentRound` 等动态别名。

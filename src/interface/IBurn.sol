@@ -137,14 +137,14 @@ interface IBurnErrors {
     error InvalidQuotaMultiplier();
     error InvalidCategoryWeights();
     error CategoryDisabled();
-    error StartRoundTooEarly(uint256 currentVerifyRound, uint256 startRound);
+    error StartRoundTooEarly(uint256 minimumStartRound, uint256 startRound);
     error DuplicateExtensionFactory(address factory);
     error InvalidCommunityConfig(string tokenSymbol);
     error DuplicateCommunity(string tokenSymbol);
     error MissingScopeCommunity();
     error InvalidScoreBase(address tokenAddress);
     error UnsupportedCommunity(address tokenAddress);
-    error RoundNotOpen(uint256 round, uint256 currentVerifyRound);
+    error RoundNotOpen(uint256 round, uint256 currentBurnRound);
     error NoClaimedReward();
     error BurnQuotaExceeded(uint256 unusedQuotaAmount, uint256 requestedAmount);
     error UnsupportedExtensionFactory(address factory);
