@@ -40,6 +40,7 @@ contract Burn is IBurn, ReentrancyGuard {
 
     struct CategoryStatsHistory {
         uint256[] changeRounds;
+        // round => stats
         mapping(uint256 => CategoryStats) statsByRound;
     }
 
@@ -73,22 +74,33 @@ contract Burn is IBurn, ReentrancyGuard {
 
     address[] internal _communities;
     string[] internal _communitySymbols;
+    // tokenAddress => weight
     mapping(address => uint256) internal _communityWeight;
+    // tokenAddress => scoreBase
     mapping(address => uint256) internal _scoreBase;
 
     address[] internal _supportedExtensionFactories;
+    // factory => isSupported
     mapping(address => bool) internal _isSupportedExtensionFactory;
 
+    // account => tokenAddress => round => burnAmountsByCategory
     mapping(address => mapping(address => mapping(uint256 => uint256[4]))) internal _accountRoundBurnAmounts;
+    // account => tokenAddress => history
     mapping(address => mapping(address => BurnStatsHistory)) internal _accountBurnStatsHistory;
+    // tokenAddress => history
     mapping(address => BurnStatsHistory) internal _communityBurnStatsHistory;
+    // account => tokenAddress => round => actionId => burnedAmount
     mapping(address => mapping(address => mapping(uint256 => mapping(uint256 => uint256)))) internal _actionRewardBurned;
 
+    // tokenAddress => slTokenAddress
     mapping(address => address) internal _slTokenAddress;
+    // tokenAddress => stTokenAddress
     mapping(address => address) internal _stTokenAddress;
 
     address[] internal _participants;
+    // account => isParticipant
     mapping(address => bool) internal _isParticipant;
+    // account => claimedAmount
     mapping(address => uint256) internal _claimedAirdropAmount;
 
     constructor(
