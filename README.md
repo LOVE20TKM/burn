@@ -8,6 +8,25 @@ Burn 是一个通用的 LOVE20 生态销毁合约。部署时指定一个范围�
 
 这不是固定比例兑换。参与者获得多少份额，取决于社区权重、销毁类别、销毁得分和其他参与者的行为。
 
+## 动态空投
+
+`Airdrop` 可以把已结束 Burn 的全局最终份额固定为一份公开 Merkle 快照，并在任意 EVM 链按同一份额分配合约持有的标准 ERC20。每种代币独立领取，领取量按该代币当前余额和剩余未领取份额动态计算；详见[动态空投设计](./docs/airdrop-design.md)。
+
+直接从来源网络生成快照并部署：
+
+```bash
+bash script/deploy/one_click_deploy_airdrop.sh <来源网络> <目标网络>
+```
+
+需要先审阅快照时，可分两步执行；部署命令会复用已生成快照：
+
+```bash
+SOURCE_BLOCK_NUMBER=<来源区块> bash script/deploy/generate_airdrop_snapshot.sh <来源网络> <目标网络>
+bash script/deploy/one_click_deploy_airdrop.sh <来源网络> <目标网络>
+```
+
+每份快照、部署地址和验收清单都保存在自己的不可覆盖目录；广播后的验收失败可用同一命令重试，不会重复部署。
+
 ## 哪些资产可以参与？
 
 部署时配置的范围代币社区及已经完成发射的直接子币社区，可以使用以下四类资产参与：
@@ -118,5 +137,6 @@ SL 类别份额      = 60% / 2 = 30%
 ## 设计资料
 
 - [正式合约设计](./docs/design.md)
+- [动态空投设计](./docs/airdrop-design.md)
 - [领域术语](./CONTEXT.md)
 - [架构决策记录](./docs/adr/)
