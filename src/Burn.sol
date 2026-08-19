@@ -215,9 +215,14 @@ contract Burn is IBurn, ReentrancyGuard {
             if (stTokenLockWeight > 0) _stTokenAddress[tokenAddress] = token.stAddress();
             totalWeight += config.weight;
 
-            emit CommunityConfigFrozen(
-                tokenAddress, config.tokenSymbol, config.weight, scoreBase_, totalSupply, deploymentRoundReward
-            );
+            emit CommunityConfigFrozen({
+                tokenAddress: tokenAddress,
+                tokenSymbol: config.tokenSymbol,
+                weight: config.weight,
+                scoreBase: scoreBase_,
+                totalSupply: totalSupply,
+                deploymentRoundReward: deploymentRoundReward
+            });
             unchecked {
                 ++i;
             }
@@ -236,7 +241,7 @@ contract Burn is IBurn, ReentrancyGuard {
             }
             _supportedExtensionFactories.push(factory);
             _isSupportedExtensionFactory[factory] = true;
-            emit SupportedExtensionFactoryFrozen(factory);
+            emit SupportedExtensionFactoryFrozen({factory: factory});
             unchecked {
                 ++i;
             }
@@ -433,7 +438,7 @@ contract Burn is IBurn, ReentrancyGuard {
         _claimedAirdropAmount[msg.sender] = amount;
         remainingAirdropShare -= share;
         IERC20(airdropTokenAddress).safeTransfer(msg.sender, amount);
-        emit AirdropClaimed(msg.sender, share, amount, remainingAirdropShare);
+        emit AirdropClaimed({account: msg.sender, share: share, amount: amount, remainingShare: remainingAirdropShare});
     }
 
     function accountRoundBurnStats(address account, address tokenAddress, uint256 round)
@@ -529,31 +534,31 @@ contract Burn is IBurn, ReentrancyGuard {
             _latestCategoryStats(_categoryHistory(_communityBurnStatsHistory[tokenAddress], category));
 
         if (category == Category.SLTokenLock) {
-            emit SLTokenLocked(
-                tokenAddress,
-                msg.sender,
-                round,
-                amount,
-                multiplier,
-                operationScore,
-                accountTotal.amount,
-                accountTotal.score,
-                communityTotal.amount,
-                communityTotal.score
-            );
+            emit SLTokenLocked({
+                tokenAddress: tokenAddress,
+                account: msg.sender,
+                round: round,
+                amount: amount,
+                scoreMultiplier: multiplier,
+                score: operationScore,
+                accountTotalAmount: accountTotal.amount,
+                accountTotalScore: accountTotal.score,
+                communityTotalAmount: communityTotal.amount,
+                communityTotalScore: communityTotal.score
+            });
         } else {
-            emit STTokenLocked(
-                tokenAddress,
-                msg.sender,
-                round,
-                amount,
-                multiplier,
-                operationScore,
-                accountTotal.amount,
-                accountTotal.score,
-                communityTotal.amount,
-                communityTotal.score
-            );
+            emit STTokenLocked({
+                tokenAddress: tokenAddress,
+                account: msg.sender,
+                round: round,
+                amount: amount,
+                scoreMultiplier: multiplier,
+                score: operationScore,
+                accountTotalAmount: accountTotal.amount,
+                accountTotalScore: accountTotal.score,
+                communityTotalAmount: communityTotal.amount,
+                communityTotalScore: communityTotal.score
+            });
         }
     }
 
@@ -568,18 +573,18 @@ contract Burn is IBurn, ReentrancyGuard {
             _latestCategoryStats(_accountBurnStatsHistory[msg.sender][tokenAddress].govRewardBurn);
         CategoryStats memory communityTotal =
             _latestCategoryStats(_communityBurnStatsHistory[tokenAddress].govRewardBurn);
-        emit GovRewardTokenBurned(
-            tokenAddress,
-            msg.sender,
-            round,
-            amount,
-            multiplier,
-            operationScore,
-            accountTotal.amount,
-            accountTotal.score,
-            communityTotal.amount,
-            communityTotal.score
-        );
+        emit GovRewardTokenBurned({
+            tokenAddress: tokenAddress,
+            account: msg.sender,
+            round: round,
+            amount: amount,
+            scoreMultiplier: multiplier,
+            score: operationScore,
+            accountTotalAmount: accountTotal.amount,
+            accountTotalScore: accountTotal.score,
+            communityTotalAmount: communityTotal.amount,
+            communityTotalScore: communityTotal.score
+        });
     }
 
     function _burnActionRewardToken(uint256 round, ActionRewardBurnRequest calldata request) internal {
@@ -762,20 +767,20 @@ contract Burn is IBurn, ReentrancyGuard {
             _latestCategoryStats(_accountBurnStatsHistory[msg.sender][request.tokenAddress].actionRewardBurn);
         CategoryStats memory communityTotal =
             _latestCategoryStats(_communityBurnStatsHistory[request.tokenAddress].actionRewardBurn);
-        emit ActionRewardTokenBurned(
-            request.tokenAddress,
-            msg.sender,
-            round,
-            request.actionId,
-            extensionAddress,
-            request.amount,
-            multiplier,
-            operationScore,
-            accountTotal.amount,
-            accountTotal.score,
-            communityTotal.amount,
-            communityTotal.score
-        );
+        emit ActionRewardTokenBurned({
+            tokenAddress: request.tokenAddress,
+            account: msg.sender,
+            round: round,
+            actionId: request.actionId,
+            extensionAddress: extensionAddress,
+            amount: request.amount,
+            scoreMultiplier: multiplier,
+            score: operationScore,
+            accountTotalAmount: accountTotal.amount,
+            accountTotalScore: accountTotal.score,
+            communityTotalAmount: communityTotal.amount,
+            communityTotalScore: communityTotal.score
+        });
     }
 
     function _recordBurnStats(

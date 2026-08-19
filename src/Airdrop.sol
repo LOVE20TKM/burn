@@ -83,7 +83,13 @@ contract Airdrop is IAirdrop, ReentrancyGuard {
         claimedShare[token] += share;
         IERC20(token).safeTransfer(account, amount);
 
-        emit AirdropClaimed(token, account, share, amount, remaining - share);
+        emit AirdropClaimed({
+            token: token,
+            account: account,
+            share: share,
+            amount: amount,
+            remainingShare: remaining - share
+        });
     }
 
     function _isClaimable(address token, address account, uint256 share, bytes32[] calldata proof)
