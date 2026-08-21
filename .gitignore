@@ -4,3 +4,6 @@ broadcast/
 cache/
 out/
 script/network/*/.account
+script/network/test_network_*
+script/network/prepare_config_*
+test/script/

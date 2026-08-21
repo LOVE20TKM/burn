@@ -27,6 +27,18 @@ bash script/deploy/one_click_deploy_airdrop.sh <来源网络> <目标网络>
 
 每份快照、部署地址和验收清单都保存在自己的不可覆盖目录；广播后的验收失败可用同一命令重试，不会重复部署。
 
+更新某网络当前可参与社区及 SL 中 LOVE20 数量的快照（默认写入 `burn.params` 注释，不改部署变量）：
+
+```bash
+bash script/deploy/00_prepare_config.sh <网络>
+```
+
+只检查链上结果是否与 `burn.params` 中的部署变量一致，不修改文件：
+
+```bash
+bash script/deploy/00_prepare_config.sh <网络> --check
+```
+
 ## 哪些资产可以参与？
 
 部署时配置的范围代币社区及已经完成发射的直接子币社区，可以使用以下四类资产参与：

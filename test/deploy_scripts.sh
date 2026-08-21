@@ -260,6 +260,14 @@ prepare_config() (
 
     cast() {
         if [ "$1" = "chain-id" ]; then printf '70001\n'; return; fi
+        if [ "$1" = "block-number" ]; then printf '123\n'; return; fi
+        if [ "$1" = "block" ]; then
+            printf '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+            return
+        fi
+        if [ "$1" = "call" ] && [[ " $* " != *' --block 123 '* ]]; then
+            return 1
+        fi
         local address=$2
         local signature=$3
         local argument=${4:-}
@@ -267,6 +275,8 @@ prepare_config() (
         case "$address:$signature:$argument" in
             0x1111111111111111111111111111111111111111:launchAddress\(\)\(address\):) printf '0x2222222222222222222222222222222222222222\n' ;;
             0x2222222222222222222222222222222222222222:launchedTokensCount\(\)\(uint256\):) printf '2\n' ;;
+            0x2222222222222222222222222222222222222222:tokenAddressBySymbol\(string\)\(address\):FIRST) printf '0x4444444444444444444444444444444444444444\n' ;;
+            0x2222222222222222222222222222222222222222:tokenAddressBySymbol\(string\)\(address\):CHILD) printf '0x5555555555555555555555555555555555555555\n' ;;
             0x2222222222222222222222222222222222222222:launchedTokensAtIndex\(uint256\)\(address\):0) printf '0x4444444444444444444444444444444444444444\n' ;;
             0x2222222222222222222222222222222222222222:launchedTokensAtIndex\(uint256\)\(address\):1) printf '0x5555555555555555555555555555555555555555\n' ;;
             0x4444444444444444444444444444444444444444:symbol\(\)\(string\):) printf '"FIRST"\n' ;;
@@ -280,9 +290,11 @@ prepare_config() (
             *) return 1 ;;
         esac
     }
+    export -f cast
 
     local output
     output=$(source script/deploy/00_prepare_config.sh "$network_name") || exit 1
+    [[ "$output" == *'Source block: 123'* ]] || exit 1
     [[ "$output" == *'SCOPE_TOKEN_SYMBOL=FIRST'* ]] || exit 1
     [[ "$output" == *'COMMUNITY_SYMBOLS=FIRST,CHILD'* ]] || exit 1
     [[ "$output" == *'COMMUNITY_WEIGHTS=100,200'* ]] || exit 1
@@ -290,6 +302,43 @@ prepare_config() (
     [[ "$output" == *'ST_TOKEN_LOCK_WEIGHT=1'* ]] || exit 1
     [[ "$output" == *'GOV_REWARD_BURN_WEIGHT=1'* ]] || exit 1
     [[ "$output" == *'ACTION_REWARD_BURN_WEIGHT=1'* ]] || exit 1
+    grep -q '^# sourceBlock=123$' "$network_path/burn.params" || exit 1
+    grep -q '^# symbol=FIRST .* love20Amount=100$' "$network_path/burn.params" || exit 1
+    grep -q '^# symbol=CHILD .* love20Amount=200$' "$network_path/burn.params" || exit 1
+    [ "$(grep -c '^# BEGIN AUTO-GENERATED COMMUNITY SL SNAPSHOT$' "$network_path/burn.params")" = 1 ] || exit 1
+    [ "$(grep '^COMMUNITY_SYMBOLS=' "$network_path/burn.params")" = 'COMMUNITY_SYMBOLS=' ] || exit 1
+    [ "$(grep '^COMMUNITY_WEIGHTS=' "$network_path/burn.params")" = 'COMMUNITY_WEIGHTS=' ] || exit 1
+
+    sed -i.bak \
+        -e 's/^SCOPE_TOKEN_SYMBOL=.*/SCOPE_TOKEN_SYMBOL=FIRST/' \
+        -e 's/^COMMUNITY_SYMBOLS=.*/COMMUNITY_SYMBOLS=FIRST,CHILD/' \
+        -e 's/^COMMUNITY_WEIGHTS=.*/COMMUNITY_WEIGHTS=100,200/' \
+        "$network_path/burn.params"
+    rm -f "$network_path/burn.params.bak"
+    local check_output check_checksum
+    check_checksum=$(cksum "$network_path/burn.params")
+    check_output=$(source script/deploy/00_prepare_config.sh "$network_name" --check) || exit 1
+    [[ "$check_output" == *'Deployment community parameters match the sampled block.'* ]] || exit 1
+    [[ "$check_output" == *'FIRST: params=100 chain=100 change=+0.00000000%'* ]] || exit 1
+    [[ "$check_output" == *'CHILD: params=200 chain=200 change=+0.00000000%'* ]] || exit 1
+    [ "$(cksum "$network_path/burn.params")" = "$check_checksum" ] || exit 1
+    sed -i.bak -e 's/^COMMUNITY_WEIGHTS=.*/COMMUNITY_WEIGHTS=999/' "$network_path/burn.params"
+    rm -f "$network_path/burn.params.bak"
+    local mismatch_output mismatch_status=0
+    mismatch_output=$(source script/deploy/00_prepare_config.sh "$network_name" --check 2>&1) || mismatch_status=$?
+    [ "$mismatch_status" -ne 0 ] || exit 1
+    [[ "$mismatch_output" == *'COMMUNITY_WEIGHTS mismatch'* ]] || exit 1
+    [[ "$mismatch_output" == *'FIRST: params=999 chain=100 change=-89.98998999%'* ]] || exit 1
+    sed -i.bak -e 's/^COMMUNITY_WEIGHTS=.*/COMMUNITY_WEIGHTS=100,200/' "$network_path/burn.params"
+    rm -f "$network_path/burn.params.bak"
+
+    printf '%s\n' '# BEGIN AUTO-GENERATED COMMUNITY SL SNAPSHOT' >>"$network_path/burn.params"
+    local before_checksum malformed_output status=0
+    before_checksum=$(cksum "$network_path/burn.params")
+    malformed_output=$(source script/deploy/00_prepare_config.sh "$network_name" 2>&1) || status=$?
+    [ "$status" -ne 0 ] || exit 1
+    [[ "$malformed_output" == *'malformed community snapshot markers'* ]] || exit 1
+    [ "$(cksum "$network_path/burn.params")" = "$before_checksum" ] || exit 1
     [ ! -e "$network_path/burn.proposed.params" ]
 )
 
@@ -665,7 +714,7 @@ assert_fails_with \
     '01_deploy_burn rejects stale burn address' \
     'burnAddress is empty after deploy' \
     deploy_stale_address
-assert_succeeds '00_prepare_config generates first-token weights' prepare_config
+assert_succeeds '00_prepare_config updates snapshot and checks deployment variables' prepare_config
 assert_fails_with \
     'one_click_deploy_airdrop requires source and target' \
     'Usage:' \
