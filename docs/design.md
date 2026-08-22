@@ -160,12 +160,12 @@ finalized = currentBurnRound > endRound
 
 四个类别的基础权重由四个独立构造参数冻结，当前部署参数可以使用 `1:1:1:1`：
 
-| 类别               | 资产处理               | 构造字段                   |
-| ------------------ | ---------------------- | -------------------------- |
-| `SLTokenLock`      | 永久锁定流动性质押凭证 | `slTokenLockWeight`        |
-| `STTokenLock`      | 永久锁定加速质押凭证   | `stTokenLockWeight`        |
-| `GovRewardBurn`    | 真实销毁治理激励代币   | `govRewardBurnWeight`      |
-| `ActionRewardBurn` | 真实销毁行动激励代币   | `actionRewardBurnWeight`   |
+| 类别               | 资产处理               | 构造字段                 |
+| ------------------ | ---------------------- | ------------------------ |
+| `SLTokenLock`      | 永久锁定流动性质押凭证 | `slTokenLockWeight`      |
+| `STTokenLock`      | 永久锁定加速质押凭证   | `stTokenLockWeight`      |
+| `GovRewardBurn`    | 真实销毁治理激励代币   | `govRewardBurnWeight`    |
+| `ActionRewardBurn` | 真实销毁行动激励代币   | `actionRewardBurnWeight` |
 
 某一类别在该社区的整个销毁周期内累计总得分大于零时，该类别为活跃类别。社区至少有一个活跃类别时为活跃社区。
 
@@ -265,7 +265,7 @@ scoreMultiplier(address tokenAddress, uint256 round)
 
 ## 7. 资产处理与额度
 
-### 7.1 SL/ST 凭证永久锁定
+### 7.1 SL/加速激励质押凭证SL永久锁定
 
 - Burn 将 `msg.sender` 的指定社区 SL 或 ST 凭证直接转入该社区的 LOVE20Token 合约地址 `tokenAddress`，自身不持有凭证。
 - LOVE20Token 没有转出任意 ERC20 的入口，且无法以凭证持有人身份主动调用 Stake 退出流程，因此转入的 SL/ST 永久锁定。
