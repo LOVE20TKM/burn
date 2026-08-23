@@ -265,7 +265,7 @@ scoreMultiplier(address tokenAddress, uint256 round)
 
 ## 7. 资产处理与额度
 
-### 7.1 SL/加速激励质押凭证SL永久锁定
+### 7.1 SL/加速激励质押凭证ST永久锁定
 
 - Burn 将 `msg.sender` 的指定社区 SL 或 ST 凭证直接转入该社区的 LOVE20Token 合约地址 `tokenAddress`，自身不持有凭证。
 - LOVE20Token 没有转出任意 ERC20 的入口，且无法以凭证持有人身份主动调用 Stake 退出流程，因此转入的 SL/ST 永久锁定。
