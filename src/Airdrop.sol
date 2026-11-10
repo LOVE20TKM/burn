@@ -72,8 +72,9 @@ contract Airdrop is IAirdrop, ReentrancyGuard {
         nonReentrant
         returns (uint256 amount)
     {
-        _requireClaim(token, account, share, proof);
+        if (account == address(0)) revert InvalidAccount();
         if (msg.sender != account) revert UnauthorizedClaimer();
+        _requireClaim(token, account, share, proof);
 
         uint256 remaining = remainingShare(token);
         amount = Math.mulDiv(IERC20(token).balanceOf(address(this)), share, remaining);
@@ -105,7 +106,6 @@ contract Airdrop is IAirdrop, ReentrancyGuard {
 
     function _requireClaim(address token, address account, uint256 share, bytes32[] calldata proof) internal view {
         if (token == address(0) || token.code.length == 0) revert InvalidToken();
-        if (account == address(0)) revert InvalidAccount();
         if (share == 0) revert InvalidShare();
         if (_claimed[token][account]) revert AirdropAlreadyClaimed();
 

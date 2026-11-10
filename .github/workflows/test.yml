@@ -1,0 +1,36 @@
+name: burn
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.1
+
+      # `src/Airdrop.sol` intentionally keeps the `AirdropClaimed` emit one
+      # key-value per line (forge fmt would collapse it), so it is excluded here.
+      - name: Format check
+        run: >-
+          forge fmt --check
+          src/interface/IAirdrop.sol
+          script/DeployAirdrop.s.sol
+          script/GenerateAirdropSnapshot.s.sol
+          script/ValidateAirdropSnapshot.s.sol
+          test/Airdrop.t.sol
+          test/AirdropEdgeCases.t.sol
+
+      # Single-threaded: snapshot generation tests mutate process-wide env vars.
+      - name: Test
+        run: forge test -j 1

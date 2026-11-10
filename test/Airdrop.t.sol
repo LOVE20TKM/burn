@@ -141,23 +141,37 @@ contract AirdropTest is Test {
     function test_RejectsInvalidAndDuplicateClaims() public {
         tokenA.mint(address(airdrop), 90 ether);
 
-        vm.expectRevert(IAirdrop.InvalidToken.selector);
-        airdrop.claim(address(0), alice, ALICE_SHARE, _aliceProof());
-
+        // Account authentication is checked before any snapshot/token state, so a
+        // zero account and a third-party caller are rejected independently of the
+        // proof / token arguments.
         vm.expectRevert(IAirdrop.InvalidAccount.selector);
         airdrop.claim(address(tokenA), address(0), ALICE_SHARE, _aliceProof());
 
+        vm.prank(relayer);
+        vm.expectRevert(IAirdrop.UnauthorizedClaimer.selector);
+        airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof());
+
+        vm.prank(relayer);
+        vm.expectRevert(IAirdrop.UnauthorizedClaimer.selector);
+        airdrop.claim(address(tokenA), alice, ALICE_SHARE, new bytes32[](0));
+
+        vm.prank(alice);
+        vm.expectRevert(IAirdrop.InvalidToken.selector);
+        airdrop.claim(address(0), alice, ALICE_SHARE, _aliceProof());
+
+        vm.prank(alice);
         vm.expectRevert(IAirdrop.InvalidShare.selector);
         airdrop.claim(address(tokenA), alice, 0, _aliceProof());
 
+        vm.prank(alice);
         vm.expectRevert(IAirdrop.InvalidProof.selector);
         airdrop.claim(address(tokenA), alice, ALICE_SHARE + 1, _aliceProof());
         assertEq(airdrop.claimableAmount(address(tokenA), alice, ALICE_SHARE + 1, _aliceProof()), 0);
 
         vm.prank(alice);
         airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof());
-        vm.expectRevert(IAirdrop.AirdropAlreadyClaimed.selector);
         vm.prank(alice);
+        vm.expectRevert(IAirdrop.AirdropAlreadyClaimed.selector);
         airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof());
     }
 
@@ -196,9 +210,20 @@ contract AirdropTest is Test {
         assertEq(builtAirdrop.claim(address(tokenA), carol, CAROL_SHARE, proofs[2]), 40 ether);
     }
 
-    function test_SnapshotRunReadsPagesFiltersZeroSharesAndWritesProofs() public {
+    // Snapshot generation is exercised in one sequential test function: the
+    // generator reads SOURCE_* through the process-wide cheatcode environment,
+    // so parallel test functions would race with each other. Each scenario also
+    // uses its own output path (the previous shared path caused a real
+    // write/remove race and made the suite flaky under `forge test`).
+    function test_SnapshotGenerationEndToEnd() public {
+        _snapshotReadsPagesFiltersZeroSharesAndValidatesProofs();
+        _snapshotRejectsUnfinalizedBurn();
+        _snapshotRequiresContractAccountReview();
+    }
+
+    function _snapshotReadsPagesFiltersZeroSharesAndValidatesProofs() internal {
         MockSnapshotBurn sourceBurn = new MockSnapshotBurn(202, 0, 1e15, true);
-        string memory output = "script/network/anvil/.airdrop-snapshot.test.json";
+        string memory output = "script/network/anvil/.airdrop-snapshot.test.pages.json";
         _setSnapshotEnv(address(sourceBurn), output);
         if (vm.exists(output)) vm.removeFile(output);
 
@@ -208,12 +233,13 @@ contract AirdropTest is Test {
         assertEq(builtTotalShare, 201e15);
 
         string memory json = vm.readFile(output);
-        assertEq(vm.readLine(output), "{");
+        assertGt(bytes(json).length, 0);
         assertEq(vm.parseJsonUint(json, ".sourceChainId"), SOURCE_CHAIN_ID);
         assertEq(vm.parseJsonUint(json, ".sourceBlockNumber"), SOURCE_BLOCK_NUMBER);
         assertEq(vm.parseJsonAddress(json, ".sourceBurnAddress"), address(sourceBurn));
         assertEq(vm.parseJsonBytes32(json, ".merkleRoot"), builtRoot);
         assertEq(vm.parseJsonUint(json, ".totalShare"), builtTotalShare);
+        assertEq(vm.parseJsonUint(json, ".accountCount"), 201);
 
         address account = vm.parseJsonAddress(json, ".entries[0].account");
         uint256 share = vm.parseJsonUint(json, ".entries[0].share");
@@ -235,11 +261,13 @@ contract AirdropTest is Test {
         assertEq(validator.run(), 201);
 
         vm.removeFile(output);
+        // Leave no deployed-instance flag behind for other suites/tests.
+        vm.setEnv("AIRDROP_ADDRESS", vm.toString(address(0)));
     }
 
-    function test_SnapshotRunRejectsUnfinalizedBurn() public {
+    function _snapshotRejectsUnfinalizedBurn() internal {
         MockSnapshotBurn sourceBurn = new MockSnapshotBurn(1, type(uint256).max, 1e15, false);
-        string memory output = "script/network/anvil/.airdrop-snapshot.test.json";
+        string memory output = "script/network/anvil/.airdrop-snapshot.test.unfinalized.json";
         _setSnapshotEnv(address(sourceBurn), output);
         if (vm.exists(output)) vm.removeFile(output);
         (, bool finalized) = sourceBurn.accountShare(address(0));
@@ -248,12 +276,14 @@ contract AirdropTest is Test {
         GenerateAirdropSnapshot builder = new GenerateAirdropSnapshot();
         vm.expectRevert(bytes("burn shares not finalized"));
         builder.run();
+        if (vm.exists(output)) vm.removeFile(output);
     }
 
-    function test_SnapshotRunRequiresContractAccountReview() public {
+    function _snapshotRequiresContractAccountReview() internal {
         MockSnapshotBurn sourceBurn = new MockSnapshotBurn(10, type(uint256).max, 1e15, true);
-        string memory output = "script/network/anvil/.airdrop-snapshot.test.json";
+        string memory output = "script/network/anvil/.airdrop-snapshot.test.contracts.json";
         _setSnapshotEnv(address(sourceBurn), output);
+        if (vm.exists(output)) vm.removeFile(output);
         vm.etch(address(10), hex"00");
         assertEq(address(10).code.length, 1);
 
@@ -264,7 +294,8 @@ contract AirdropTest is Test {
         vm.setEnv("CONTRACT_ACCOUNTS_REVIEWED", "true");
         (,, uint256 accountCount) = builder.run();
         assertEq(accountCount, 10);
-        vm.removeFile(output);
+        if (vm.exists(output)) vm.removeFile(output);
+        vm.setEnv("CONTRACT_ACCOUNTS_REVIEWED", "false");
     }
 
     function _setSnapshotEnv(address sourceBurn, string memory output) internal {

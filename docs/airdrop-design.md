@@ -69,7 +69,7 @@ script/network/<目标网络>/airdrops/<来源链ID>-<来源Burn地址>-<来源�
 script/network/<目标网络>/airdrops/<来源链ID>-<来源Burn地址>-<来源区块>/airdrop.params
 ```
 
-快照 JSON 还包含 `accountCount`，必须与 `entries` 实际地址数一致。
+快照 JSON 还包含 `accountCount`，必须与 `entries` 实际地址数一致。生成器在 `build()` 阶段拒绝重复地址（与验证器一致）；"每个地址只出现一次"是合约一次性领取资格的结构性前提，重复叶子会导致该份额永久无人可领。
 
 例如：
 
@@ -77,7 +77,7 @@ script/network/<目标网络>/airdrops/<来源链ID>-<来源Burn地址>-<来源�
 SOURCE_BLOCK_NUMBER=123456 bash script/deploy/one_click_deploy_airdrop.sh anvil anvil
 ```
 
-部署前必须独立复算 JSON 中的 `entries`、`merkleRoot`、`totalShare` 和每个 proof，并确认来源字段与计划一致；部署后还要用目标链合约逐个地址复核叶子和 proof，全部通过后才公布地址。
+部署前必须独立复算 JSON 中的 `entries`、`merkleRoot`、`totalShare` 和每个 proof，并确认来源字段与计划一致；部署后还要用目标链合约逐个地址复核叶子和 proof，全部通过后才公布地址。链下校验器只做 JSON 自洽性校验（`totalShare == Σentries`、按同规则重算 root、逐条验 proof），**不能发现生成器读错来源数据**；来源一致性必须由部署者回读来源链的 `participants()` 与 `accountShare()`（或使用带 `--fork-url`/`--fork-block-number` 的 fork 复核）独立确认。
 
 ## 3. 部署配置
 
@@ -93,9 +93,12 @@ constructor(
 
 `totalShare` 必须大于零且不超过 `1e18`。来源字段和 Root 部署后不可修改。部署脚本读取同名大写环境变量，并在广播后逐项验收公开 getter。
 
+`DeployAirdrop` 在广播前强制要求 `SNAPSHOT_INPUT` 指向待部署的 `airdrop-snapshot.json`，并调用验证器复算 `Σentries`、root 与逐条 proof；缺少 `SNAPSHOT_INPUT` 或快照校验失败时直接回滚。这样即使绕过一键脚本直接调用部署脚本，也不会跳过唯一的快照一致性校验。路径必须位于 `foundry.toml` 的 `fs_permissions` 允许范围内（`./script/network/`），即快照目录中的 JSON。
+
 每份版本化快照目录需要同时保留快照生成器写出的 `airdrop-snapshot.json` 和 `airdrop.params`：
 
 ```bash
+SNAPSHOT_INPUT=<快照JSON路径>
 SOURCE_CHAIN_ID=<来源链ID>
 SOURCE_BLOCK_NUMBER=<来源区块号>
 SOURCE_BURN=<Burn地址>
@@ -127,7 +130,21 @@ claimAmount = token.balanceOf(airdrop) × accountShare ÷ remainingShare(token)
 - 地址份额不超过这种代币的剩余份额。
 - 计算出的领取量大于零。
 
+校验顺序以实现为准：账户非零 → 调用者是账户本人 → 代币地址有代码 → 份额非零 → 未领取 → 份额不超过剩余 → Merkle proof → 金额大于零。第三方调用者总会在 proof 校验之前得到 `UnauthorizedClaimer`，不会因 proof 质量得到不同错误。
+
 状态在 ERC20 转账前更新，并使用重入保护；转账失败时整笔交易回滚。每种代币分别保存已领取地址和累计已领取份额，领取一种代币不影响其他代币。
+
+`claimableAmount(token, account, share, proof)` 是只读的"当前可领取量"，不校验调用者，且返回 `0` 有七类不同成因：
+
+- 代币地址为零或无代码；
+- 账户为零；
+- 份额为零；
+- 该账户已领取该代币；
+- 份额超过剩余份额；
+- Merkle proof 无效；
+- 资格有效但 `floor` 后的金额为零（等待充值或更小份额地址先领取）。
+
+前端不能用 `0` 判断"无资格"，应结合 `isClaimed`、`remainingShare` 与转账前后余额差展示；对 `balanceOf` 会 revert 的代币，整个 view 也会 revert，需要 try/catch。
 
 ## 5. 充值与永久边界
 
@@ -137,4 +154,86 @@ claimAmount = token.balanceOf(airdrop) × accountShare ÷ remainingShare(token)
 remainingShare(token) > 0
 ```
 
-某地址领取一种代币后，后续转入的同种代币只由尚未领取该代币的地址分配。当 `remainingShare(token) == 0` 后再转入该代币，资产会因没有剩余资格且没有取回入口而永久锁定。
+但该条件**不是充分条件**：单叶可领当且仅当 `balance × share ≥ remainingShare`；若入账余额 `B < remainingShare / maxShare`，所有地址的 `claimableAmount` 都为 0、`claim` 都回滚 `NoClaimableAmount`，直到继续充值。按最大份额地址抽检一次 `claimableAmount > 0` 更可靠。
+
+某地址领取一种代币后，后续转入的同种代币只由尚未领取该代币的地址分配，且不补发；因此提前领取会永久放弃该代币后续的追加充值。若预期会有后续充值，领取者应等待。价格随领取单调上升（floor 尘埃留在池中），等待不会让先领取者占便宜。
+
+任何转入该合约的 ERC20（包括与本次空投无关的误转代币）都会立刻成为该代币的动态池，被下一个领取者按 `share / remainingShare` 分走；合约不登记代币目录，也没有资产取回入口。误转不会"锁死"，而是分配给尚未领取的地址。
+
+`remainingShare(token) == 0` 后再转入该代币，因没有剩余资格且没有取回入口，资产永久锁定。另外，以下情况下 `remainingShare > 0` 也可能永久锁定对应比例：快照中存在重复地址、来源地址的私钥失联、或来源地址是目标链上无法控制同一地址的合约账户。全部叶子领取后，最后一位领取者获得前面所有人 floor 取整留下的最小单位余量；若快照本身存在不可领取份额，该余量也无法被完全分配。
+
+同一份来源快照可以在目标链部署多个实例，但每个实例只分配自己持有的余额；若两个实例都被充值，同一地址可各领一次。运营上应保证**同一来源快照在目标链只存在一个官方实例**，并只公布通过验收的地址。
+
+合约没有管理员、没有暂停、没有截止时间、没有 Root 更新或资产取回入口；误转资产、无人领取份额和部署参数错误都无法从合约取回。
+
+## 6. 验收测试清单
+
+仓库现有 `test/Airdrop.t.sol` 与 `test/AirdropEdgeCases.t.sol` 覆盖：
+
+- 构造器冻结五项来源字段并拒绝零值/越界参数。
+- 本人领取成功；第三方调用（含有效 proof 与无效 proof）统一回滚 `UnauthorizedClaimer`，状态不变。
+- 重入：token 转账回调中再次 `claim` 被 `ReentrancyGuard` 拦下，外层状态一致。
+- 非标准 ERC20：`transfer` 返回 `false` 时整笔回滚、资格保留；空返回值（USDT 风格）可正常领取。
+- 金额为 0 时不消耗资格；追加充值后按比例可领。
+- 单叶树（空 proof）、5 叶与 9 叶奇数树全部可领且末位领取者清零余额。
+- 快照生成器拒绝重复地址。
+- 全领后 `claimedShare == totalShare`、余额为 0；之后再转入的代币永久留存。
+- `totalShare < Σleaves` 时尾部地址永久 `ShareExceedsRemaining`；`totalShare > Σleaves` 时残留永久锁定（部署期信任边界回归）。
+- 随机份额/余额/领取顺序下 `Σpayout == 初始余额`（fuzz）。
+
+以下仍属部署前人工复核（当前无自动化测试）：
+
+- 验证器对重复地址、篡改条目与来源不一致快照的拒绝路径（一键脚本会执行 happy path，负向路径需人工构造快照确认）。
+- 从来源链回读 `participants()`/`accountShare()` 并与 JSON 做全量比对。
+- 目标链浏览器源码验证与带 fork 的部署演练。
+
+测试约定：快照生成相关用例必须在单个测试函数内串行执行，避免 `vm.setEnv` 的进程级全局状态与其他并发测试冲突；fixture 路径必须唯一；CI 建议使用 `forge test -j 1`。
+
+## 7. 接口、事件与错误
+
+### 7.1 只读接口
+
+| 接口 | 语义 |
+| --- | --- |
+| `sourceChainId()` / `sourceBlockNumber()` / `sourceBurnAddress()` | 来源快照的链 ID、区块号与 Burn 地址，仅用于溯源，不参与领取验证 |
+| `merkleRoot()` / `totalShare()` | 不可变的 Merkle Root 与快照份额总和（`Σleaves`） |
+| `claimedShare(token)` | 该代币已被成功领取消耗的来源份额累计值 |
+| `remainingShare(token)` | `totalShare - claimedShare(token)`，即该代币剩余未领取份额 |
+| `isClaimed(token, account)` | 该地址是否已成功领取过该代币 |
+| `leafHash(account, share)` | 快照叶子编码，必须与生成器/验证器保持一致 |
+| `claimableAmount(token, account, share, proof)` | 当前可领取金额；返回 0 的七类成因见 §4 |
+
+### 7.2 事件
+
+```solidity
+event AirdropClaimed(
+    address indexed token,
+    address indexed account,
+    uint256 share,
+    uint256 amount,
+    uint256 remainingShare
+);
+```
+
+- `token`：本次领取的 ERC20；`account`：快照账户，必然等于 `msg.sender`；`share`：快照中的来源份额；`amount`：合约按 `balance × share ÷ remainingShare` 记账的金额（标准 ERC20 下等于实收）；`remainingShare`：领取后的 `totalShare - claimedShare[token]`。
+- 与 Burn 的同名事件不同：Burn 的 `AirdropClaimed(address indexed account, uint256 share, uint256 amount, uint256 remainingShare)` 是 4 字段、没有 `token`，两者 topic0 不同。索引器必须按合约地址/事件签名分流，不能按事件名跨实例聚合。
+
+### 7.3 错误
+
+| 错误 | 触发条件 |
+| --- | --- |
+| `ZeroAddress()` | 构造器 `sourceBurnAddress == address(0)` |
+| `InvalidSourceChainId()` | 构造器 `sourceChainId == 0` |
+| `InvalidSourceBlock()` | 构造器 `sourceBlockNumber == 0` |
+| `InvalidMerkleRoot()` | 构造器 `merkleRoot == bytes32(0)` |
+| `InvalidTotalShare()` | 构造器 `totalShare == 0` 或 `> 1e18` |
+| `InvalidToken()` | 代币地址为零或没有合约代码 |
+| `InvalidAccount()` | 账户为零地址（在调用者校验之前） |
+| `InvalidShare()` | 份额为零 |
+| `InvalidProof()` | 地址与份额无法通过不可变 Root 验证 |
+| `UnauthorizedClaimer()` | `msg.sender != account`（在 proof 校验之前） |
+| `ShareExceedsRemaining(share, remainingShare)` | 份额超过该代币剩余份额（一致快照下不可达） |
+| `AirdropAlreadyClaimed()` | 该 `(token, account)` 已成功领取 |
+| `NoClaimableAmount()` | 计算出的领取量为零，状态不变 |
+
+`claimableAmount` 对无效输入返回 0 而不是回滚；但 `balanceOf` 会 revert 的代币会让整个 view revert。

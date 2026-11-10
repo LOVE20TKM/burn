@@ -53,9 +53,17 @@ contract GenerateAirdropSnapshot is Script {
         uint256 count = accounts.length;
         require(count > 0 && count == shares.length, "invalid snapshot entries");
 
+        // CONTEXT.md requires each account to appear at most once. Check it here,
+        // symmetrically with ValidateAirdropSnapshot, so callers of `build` cannot
+        // silently produce a snapshot whose duplicate leaf can never be claimed.
+        // Snapshot sizes are bounded by Burn participants (hundreds), so the
+        // quadratic uniqueness check is acceptable for an off-chain generator.
         bytes32[] memory leaves = new bytes32[](count);
         for (uint256 i; i < count; ++i) {
             require(accounts[i] != address(0) && shares[i] > 0, "invalid snapshot entry");
+            for (uint256 j; j < i; ++j) {
+                require(accounts[j] != accounts[i], "duplicate snapshot account");
+            }
             leaves[i] = leafHash(accounts[i], shares[i]);
             totalShare += shares[i];
         }

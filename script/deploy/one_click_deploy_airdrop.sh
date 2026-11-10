@@ -95,6 +95,8 @@ snapshot_file="$snapshot_dir/airdrop-snapshot.json"
 params_file="$snapshot_dir/airdrop.params"
 address_file="$snapshot_dir/address.airdrop.params"
 manifest="$snapshot_dir/airdrop-deployment.json"
+# DeployAirdrop validates the snapshot itself and fails closed without it.
+export SNAPSHOT_INPUT="$snapshot_file"
 deployment_network="$target_network/airdrops/$snapshot_id"
 
 echo -e "\n[2/5] Validate Airdrop snapshot"
