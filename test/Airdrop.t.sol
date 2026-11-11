@@ -19,10 +19,17 @@ contract AirdropTest is Test {
     address internal carol = address(0xCA201);
     address internal relayer = address(0x2E1A);
 
-    uint256 internal constant ALICE_SHARE = 0.2 ether;
-    uint256 internal constant BOB_SHARE = 0.3 ether;
-    uint256 internal constant CAROL_SHARE = 0.4 ether;
-    uint256 internal constant TOTAL_SHARE = 0.9 ether;
+    // Raw pool shares, normalised by the generator to exactly 1e18.
+    uint256 internal constant ALICE_RAW = 0.2 ether;
+    uint256 internal constant BOB_RAW = 0.3 ether;
+    uint256 internal constant CAROL_RAW = 0.4 ether;
+
+    // floor(raw * 1e18 / 0.9e18); the 1 wei floor remainder goes to the largest
+    // share (carol), so the leaves sum to exactly TOTAL_SHARE.
+    uint256 internal constant ALICE_SHARE = 222222222222222222;
+    uint256 internal constant BOB_SHARE = 333333333333333333;
+    uint256 internal constant CAROL_SHARE = 444444444444444445;
+    uint256 internal constant TOTAL_SHARE = 1 ether;
 
     Airdrop internal airdrop;
     MockERC20 internal tokenA;
@@ -88,19 +95,21 @@ contract AirdropTest is Test {
         airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof());
         assertFalse(airdrop.isClaimed(address(tokenA), alice));
 
+        // Shares are normalised to 1e18, so floor(900e18 x share / 1e18) is no
+        // longer a round number: 900e18 x 0.222222222222222222e18.
         vm.expectEmit(true, true, false, true);
-        emit AirdropClaimed(address(tokenA), alice, ALICE_SHARE, 200 ether, 0.7 ether);
+        emit AirdropClaimed(address(tokenA), alice, ALICE_SHARE, 199_999_999_999_999_999_800, 777_777_777_777_777_778);
         vm.prank(alice);
-        assertEq(airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof()), 200 ether);
-        assertEq(tokenA.balanceOf(alice), 200 ether);
+        assertEq(airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof()), 199_999_999_999_999_999_800);
+        assertEq(tokenA.balanceOf(alice), 199_999_999_999_999_999_800);
         assertTrue(airdrop.isClaimed(address(tokenA), alice));
 
         tokenA.mint(address(airdrop), 70 ether);
-        assertEq(airdrop.claimableAmount(address(tokenA), bob, BOB_SHARE, _bobProof()), 330 ether);
+        assertEq(airdrop.claimableAmount(address(tokenA), bob, BOB_SHARE, _bobProof()), 329_999_999_999_999_999_661);
         vm.prank(bob);
-        assertEq(airdrop.claim(address(tokenA), bob, BOB_SHARE, _bobProof()), 330 ether);
+        assertEq(airdrop.claim(address(tokenA), bob, BOB_SHARE, _bobProof()), 329_999_999_999_999_999_661);
         vm.prank(carol);
-        assertEq(airdrop.claim(address(tokenA), carol, CAROL_SHARE, _carolProof()), 440 ether);
+        assertEq(airdrop.claim(address(tokenA), carol, CAROL_SHARE, _carolProof()), 440_000_000_000_000_000_539);
         assertEq(airdrop.claimedShare(address(tokenA)), TOTAL_SHARE);
         assertEq(airdrop.remainingShare(address(tokenA)), 0);
         assertEq(tokenA.balanceOf(address(airdrop)), 0);
@@ -115,11 +124,13 @@ contract AirdropTest is Test {
         tokenB.mint(address(airdrop), 180 ether);
 
         vm.prank(alice);
-        assertEq(airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof()), 20 ether);
+        assertEq(airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof()), 19_999_999_999_999_999_980);
         assertFalse(airdrop.isClaimed(address(tokenB), alice));
-        assertEq(airdrop.claimableAmount(address(tokenB), alice, ALICE_SHARE, _aliceProof()), 40 ether);
+        assertEq(
+            airdrop.claimableAmount(address(tokenB), alice, ALICE_SHARE, _aliceProof()), 39_999_999_999_999_999_960
+        );
         vm.prank(alice);
-        assertEq(airdrop.claim(address(tokenB), alice, ALICE_SHARE, _aliceProof()), 40 ether);
+        assertEq(airdrop.claim(address(tokenB), alice, ALICE_SHARE, _aliceProof()), 39_999_999_999_999_999_960);
 
         assertEq(airdrop.claimedShare(address(tokenA)), ALICE_SHARE);
         assertEq(airdrop.claimedShare(address(tokenB)), ALICE_SHARE);
@@ -134,6 +145,7 @@ contract AirdropTest is Test {
         assertFalse(airdrop.isClaimed(address(tokenA), alice));
         assertEq(airdrop.remainingShare(address(tokenA)), TOTAL_SHARE);
 
+        // 5 wei total: floor(5 x 0.222222222222222222e18 / 1e18) == 1.
         tokenA.mint(address(airdrop), 4);
         vm.prank(alice);
         assertEq(airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof()), 1);
@@ -211,7 +223,7 @@ contract AirdropTest is Test {
         }
         assertTrue(found, "AirdropClaimed not emitted");
 
-        assertEq(amount, 200 ether);
+        assertEq(amount, 199_999_999_999_999_999_800);
         assertEq(airdrop.claimedAmount(address(tokenA), alice), amount);
         assertEq(eventAmount, amount);
         assertEq(tokenA.balanceOf(alice) - balanceBefore, amount);
@@ -238,7 +250,7 @@ contract AirdropTest is Test {
 
         vm.prank(alice);
         airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof());
-        assertEq(airdrop.claimedAmount(address(tokenA), alice), 200 ether);
+        assertEq(airdrop.claimedAmount(address(tokenA), alice), 199_999_999_999_999_999_800);
         assertEq(airdrop.claimedAmount(address(tokenA), bob), 0);
     }
 
@@ -248,13 +260,13 @@ contract AirdropTest is Test {
 
         vm.prank(alice);
         uint256 amountA = airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof());
-        assertEq(amountA, 20 ether);
+        assertEq(amountA, 19_999_999_999_999_999_980);
         assertEq(airdrop.claimedAmount(address(tokenA), alice), amountA);
         assertEq(airdrop.claimedAmount(address(tokenB), alice), 0);
 
         vm.prank(alice);
         uint256 amountB = airdrop.claim(address(tokenB), alice, ALICE_SHARE, _aliceProof());
-        assertEq(amountB, 40 ether);
+        assertEq(amountB, 39_999_999_999_999_999_960);
         assertEq(airdrop.claimedAmount(address(tokenA), alice), amountA);
         assertEq(airdrop.claimedAmount(address(tokenB), alice), amountB);
     }
@@ -275,9 +287,11 @@ contract AirdropTest is Test {
         accounts[0] = alice;
         accounts[1] = bob;
         accounts[2] = carol;
-        shares[0] = ALICE_SHARE;
-        shares[1] = BOB_SHARE;
-        shares[2] = CAROL_SHARE;
+        // `build` normalises, so feed the raw pool shares and expect the
+        // same 1e18-scaled leaves and root that `setUp` hand-rolled above.
+        shares[0] = ALICE_RAW;
+        shares[1] = BOB_RAW;
+        shares[2] = CAROL_RAW;
 
         (bytes32 builtRoot, uint256 builtTotalShare, bytes32[][] memory proofs) = builder.build(accounts, shares);
         assertEq(builtRoot, root);
@@ -287,7 +301,7 @@ contract AirdropTest is Test {
             new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, builtRoot, builtTotalShare);
         tokenA.mint(address(builtAirdrop), 90 ether);
         vm.prank(carol);
-        assertEq(builtAirdrop.claim(address(tokenA), carol, CAROL_SHARE, proofs[2]), 40 ether);
+        assertEq(builtAirdrop.claim(address(tokenA), carol, CAROL_SHARE, proofs[2]), 40_000_000_000_000_000_050);
     }
 
     // Snapshot generation is exercised in one sequential test function: the
@@ -310,7 +324,9 @@ contract AirdropTest is Test {
         GenerateAirdropSnapshot builder = new GenerateAirdropSnapshot();
         (bytes32 builtRoot, uint256 builtTotalShare, uint256 accountCount) = builder.run();
         assertEq(accountCount, 201);
-        assertEq(builtTotalShare, 201e15);
+        // 201 equal raw shares normalise to 1e18 exactly: the 148 wei floor
+        // remainder goes to the largest share, and index 0 wins the tie.
+        assertEq(builtTotalShare, 1 ether);
 
         string memory json = vm.readFile(output);
         assertGt(bytes(json).length, 0);
@@ -325,13 +341,13 @@ contract AirdropTest is Test {
         uint256 share = vm.parseJsonUint(json, ".entries[0].share");
         bytes32[] memory proof = vm.parseJsonBytes32Array(json, ".entries[0].proof");
         assertEq(account, address(2));
-        assertEq(share, 1e15);
+        assertEq(share, 4975124378109600);
 
         Airdrop builtAirdrop =
             new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, address(sourceBurn), builtRoot, builtTotalShare);
         tokenA.mint(address(builtAirdrop), 201 ether);
         vm.prank(account);
-        assertEq(builtAirdrop.claim(address(tokenA), account, share, proof), 1 ether);
+        assertEq(builtAirdrop.claim(address(tokenA), account, share, proof), 1000000000000029600);
 
         vm.setEnv("SNAPSHOT_INPUT", output);
         vm.setEnv("MERKLE_ROOT", vm.toString(builtRoot));

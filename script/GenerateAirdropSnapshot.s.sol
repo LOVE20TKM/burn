@@ -4,6 +4,7 @@ pragma solidity =0.8.17;
 import {Script} from "forge-std/Script.sol";
 import {console2} from "forge-std/console2.sol";
 import {IBurn} from "../src/interface/IBurn.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 contract GenerateAirdropSnapshot is Script {
     error ContractAccountsRequireTargetReview(uint256 count);
@@ -32,8 +33,12 @@ contract GenerateAirdropSnapshot is Script {
         bool contractAccountsReviewed = vm.envOr("CONTRACT_ACCOUNTS_REVIEWED", false);
         (address[] memory accounts, uint256[] memory shares) =
             _readFinalShares(IBurn(metadata.sourceBurnAddress), contractAccountsReviewed);
+        // Leaves are hashed from the normalised shares, so publish those; the
+        // same array drives the tree so JSON and root can never disagree.
+        _requireValidEntries(accounts, shares);
+        uint256[] memory normalized = normalizeShares(shares);
         bytes32[][] memory proofs;
-        (root, totalShare, proofs) = build(accounts, shares);
+        (root, totalShare, proofs) = _build(accounts, normalized);
         metadata.root = root;
         metadata.totalShare = totalShare;
         accountCount = accounts.length;
@@ -42,7 +47,7 @@ contract GenerateAirdropSnapshot is Script {
         string memory directory = string.concat("script/network/", network);
         vm.createDir(directory, true);
         string memory output = vm.envOr("SNAPSHOT_OUTPUT", string.concat(directory, "/airdrop-snapshot.json"));
-        _writeSnapshot(output, metadata, accounts, shares, proofs);
+        _writeSnapshot(output, metadata, accounts, normalized, proofs);
     }
 
     function build(address[] memory accounts, uint256[] memory shares)
@@ -50,24 +55,44 @@ contract GenerateAirdropSnapshot is Script {
         pure
         returns (bytes32 root, uint256 totalShare, bytes32[][] memory proofs)
     {
+        _requireValidEntries(accounts, shares);
+        // Shares must be normalised before hashing: the Merkle leaves and the
+        // published JSON both carry the 1e18-scaled values, and the consumer
+        // (AirdropDistributor) hard-codes TOTAL_SHARE = 1e18.
+        return _build(accounts, normalizeShares(shares));
+    }
+
+    function _requireValidEntries(address[] memory accounts, uint256[] memory shares) internal pure {
         uint256 count = accounts.length;
         require(count > 0 && count == shares.length, "invalid snapshot entries");
 
         // CONTEXT.md requires each account to appear at most once. Check it here,
-        // symmetrically with ValidateAirdropSnapshot, so callers of `build` cannot
-        // silently produce a snapshot whose duplicate leaf can never be claimed.
-        // Snapshot sizes are bounded by Burn participants (hundreds), so the
-        // quadratic uniqueness check is acceptable for an off-chain generator.
-        bytes32[] memory leaves = new bytes32[](count);
+        // symmetrically with ValidateAirdropSnapshot, so callers cannot silently
+        // produce a snapshot whose duplicate leaf can never be claimed. Snapshot
+        // sizes are bounded by Burn participants (hundreds), so the quadratic
+        // uniqueness check is acceptable for an off-chain generator.
         for (uint256 i; i < count; ++i) {
             require(accounts[i] != address(0) && shares[i] > 0, "invalid snapshot entry");
             for (uint256 j; j < i; ++j) {
                 require(accounts[j] != accounts[i], "duplicate snapshot account");
             }
-            leaves[i] = leafHash(accounts[i], shares[i]);
-            totalShare += shares[i];
         }
-        require(totalShare <= WAD, "invalid total share");
+    }
+
+    function _build(address[] memory accounts, uint256[] memory normalized)
+        internal
+        pure
+        returns (bytes32 root, uint256 totalShare, bytes32[][] memory proofs)
+    {
+        uint256 count = accounts.length;
+        bytes32[] memory leaves = new bytes32[](count);
+        uint256 normalizedTotal;
+        for (uint256 i; i < count; ++i) {
+            require(normalized[i] > 0, "normalized share rounded to zero");
+            leaves[i] = leafHash(accounts[i], normalized[i]);
+            normalizedTotal += normalized[i];
+        }
+        require(normalizedTotal == WAD, "normalized share sum mismatch");
 
         bytes32[][] memory layers = _buildLayers(leaves);
         root = layers[layers.length - 1][0];
@@ -75,6 +100,33 @@ contract GenerateAirdropSnapshot is Script {
         for (uint256 i; i < count; ++i) {
             proofs[i] = _proof(layers, i);
         }
+        totalShare = WAD;
+    }
+
+    /// @notice Scales raw Burn shares to exactly WAD, adding the floor rounding
+    ///         remainder to the largest share (lowest index wins ties).
+    function normalizeShares(uint256[] memory shares) public pure returns (uint256[] memory normalized) {
+        uint256 count = shares.length;
+        require(count > 0, "invalid snapshot entries");
+
+        uint256 rawTotal;
+        uint256 largestIndex;
+        for (uint256 i; i < count; ++i) {
+            if (shares[i] > shares[largestIndex]) largestIndex = i;
+            rawTotal += shares[i];
+        }
+        require(rawTotal > 0, "no positive snapshot share");
+
+        normalized = new uint256[](count);
+        uint256 normalizedTotal;
+        for (uint256 i; i < count; ++i) {
+            normalized[i] = Math.mulDiv(shares[i], WAD, rawTotal);
+            normalizedTotal += normalized[i];
+        }
+        // floor() only ever drops dust, so the sum cannot exceed WAD and the
+        // remainder is at most count - 1 wei.
+        require(normalizedTotal <= WAD, "invalid normalized share");
+        normalized[largestIndex] += WAD - normalizedTotal;
     }
 
     function leafHash(address account, uint256 share) public pure returns (bytes32) {

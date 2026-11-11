@@ -30,8 +30,8 @@
 1. 检查实际链 ID、区块号及 Burn 合约代码。
 2. 分页读取 `participants()`。
 3. 读取每个地址的 `accountShare()`，要求份额已经最终确定，只保留正份额地址。
-4. 以所有保留地址份额之和作为 `totalShare`。
-5. 生成 Merkle Root、每个地址的证明和 JSON 文件。
+4. 把份额归一化到精确 `1e18` 作为 `totalShare`，余数补给最大份额地址。
+5. 以归一化后的份额生成 Merkle Root、每个地址的证明和 JSON 文件。
 
 正份额地址在来源区块具有合约代码时，生成器会列出地址并默认停止。逐一确认这些合约账户能够在目标链控制同一地址后，才可通过 `CONTRACT_ACCOUNTS_REVIEWED=true` 显式确认并重新生成；该确认不能替代人工核验。
 
@@ -42,6 +42,21 @@ keccak256(bytes.concat(keccak256(abi.encode(account, share))))
 ```
 
 树的每对节点按字节值排序后哈希；某层最后一个无配对节点直接提升到下一层。该格式与合约内 OpenZeppelin `MerkleProof` 的排序证明验证一致。
+
+归一化算法（`GenerateAirdropSnapshot.normalizeShares`）：
+
+```solidity
+uint256 rawTotal = Σ shares[i];
+uint256 largestIndex = argmax(shares);           // 并列取索引最小者
+normalized[i] = Math.mulDiv(shares[i], WAD, rawTotal);   // floor
+normalized[largestIndex] += WAD - Σ normalized[i];
+```
+
+`floor` 只会丢弃尘埃，因此 `Σ normalized[i] <= 1e18` 恒成立，余数不超过 `地址数 - 1` wei。归一化在**叶子构建之前**完成：叶子哈希、JSON 中的 `share`、`merkleRoot` 三者都基于同一份归一化数组，不可能互相不一致。生成器断言 `Σ normalized == 1e18`，正常不可达失败分支。
+
+生成器同时拒绝任何 `normalized[i] == 0` 的条目。来源份额本身已是 WAD 分数、且 `Σ raw <= 1e18` 时，`normalized[i] >= raw[i] >= 1` 恒成立，截断为 0 只在原始分布远超 `1e18` 量级时才会出现；`build()` 是 public 入口，无法假定调用方满足这条约束。零份额叶子会占用一个证明与一次领取资格却永远付不出任何代币，因此生成器直接拒绝，而不是把它写进快照。
+
+归一化的动机：消费方把总份额硬编码为编译期常量 `1e18`，链下快照必须 `Σleaves == 1e18` 精确相等；若只做上限校验（`Σ <= 1e18`），多次向下取整会留下 `1e18 - Σ` 的份额永久无人可领。
 
 默认通过一键脚本生成快照并部署目标链 Airdrop；可用 `SOURCE_BLOCK_NUMBER` 固定来源区块：
 
@@ -77,7 +92,7 @@ script/network/<目标网络>/airdrops/<来源链ID>-<来源Burn地址>-<来源�
 SOURCE_BLOCK_NUMBER=123456 bash script/deploy/one_click_deploy_airdrop.sh anvil anvil
 ```
 
-部署前必须独立复算 JSON 中的 `entries`、`merkleRoot`、`totalShare` 和每个 proof，并确认来源字段与计划一致；部署后还要用目标链合约逐个地址复核叶子和 proof，全部通过后才公布地址。链下校验器只做 JSON 自洽性校验（`totalShare == Σentries`、按同规则重算 root、逐条验 proof），**不能发现生成器读错来源数据**；来源一致性必须由部署者回读来源链的 `participants()` 与 `accountShare()`（或使用带 `--fork-url`/`--fork-block-number` 的 fork 复核）独立确认。
+部署前必须独立复算 JSON 中的 `entries`、`merkleRoot`、`totalShare` 和每个 proof，并确认来源字段与计划一致；部署后还要用目标链合约逐个地址复核叶子和 proof，全部通过后才公布地址。链下校验器做 JSON 自洽性校验（要求 `totalShare == 1e18` 且 `Σentries == 1e18`、按同规则重算 root、逐条验 proof），**不能发现生成器读错来源数据**；来源一致性必须由部署者回读来源链的 `participants()` 与 `accountShare()`（或使用带 `--fork-url`/`--fork-block-number` 的 fork 复核）独立确认。
 
 ## 3. 部署配置
 
@@ -91,7 +106,7 @@ constructor(
 )
 ```
 
-`totalShare` 必须大于零且不超过 `1e18`。来源字段和 Root 部署后不可修改。部署脚本读取同名大写环境变量，并在广播后逐项验收公开 getter。
+`totalShare` 必须等于 `1e18`。来源字段和 Root 部署后不可修改。部署脚本读取同名大写环境变量，并在广播后逐项验收公开 getter。
 
 `DeployAirdrop` 在广播前强制要求 `SNAPSHOT_INPUT` 指向待部署的 `airdrop-snapshot.json`，并调用验证器复算 `Σentries`、root 与逐条 proof；缺少 `SNAPSHOT_INPUT` 或快照校验失败时直接回滚。这样即使绕过一键脚本直接调用部署脚本，也不会跳过唯一的快照一致性校验。路径必须位于 `foundry.toml` 的 `fs_permissions` 允许范围内（`./script/network/`），即快照目录中的 JSON。
 
@@ -160,7 +175,9 @@ remainingShare(token) > 0
 
 任何转入该合约的 ERC20（包括与本次空投无关的误转代币）都会立刻成为该代币的动态池，被下一个领取者按 `share / remainingShare` 分走；合约不登记代币目录，也没有资产取回入口。误转不会"锁死"，而是分配给尚未领取的地址。
 
-`remainingShare(token) == 0` 后再转入该代币，因没有剩余资格且没有取回入口，资产永久锁定。另外，以下情况下 `remainingShare > 0` 也可能永久锁定对应比例：快照中存在重复地址、来源地址的私钥失联、或来源地址是目标链上无法控制同一地址的合约账户。全部叶子领取后，最后一位领取者获得前面所有人 floor 取整留下的最小单位余量；若快照本身存在不可领取份额，该余量也无法被完全分配。
+`remainingShare(token) == 0` 后再转入该代币，因没有剩余资格且没有取回入口，资产永久锁定。另外，以下情况下 `remainingShare > 0` 也可能永久锁定对应比例：快照中存在重复地址、来源地址的私钥失联、或来源地址是目标链上无法控制同一地址的合约账户。全部叶子领取后，最后一位领取者获得前面所有人 floor 取整留下的最小单位余量。
+
+新生成的快照由生成器保证 `Σleaves == totalShare == 1e18`，因此不会再出现"快照自身就有不可领取份额"的情形：`remainingShare(token)` 只在所有叶子都被领取后才归零，不存在结构性残留。历史快照（归一化之前生成的）仍可能满足 `Σleaves != totalShare`：此时 `totalShare < Σleaves` 会让尾部地址永久回滚 `ShareExceedsRemaining`，`totalShare > Σleaves` 会让 `totalShare - Σleaves` 的比例永久锁定。链下验证器现在要求 `totalShare == 1e18` 且 `Σentries == 1e18`，这类快照会被直接拒绝，不会再被部署。
 
 同一份来源快照可以在目标链部署多个实例，但每个实例只分配自己持有的余额；若两个实例都被充值，同一地址可各领一次。运营上应保证**同一来源快照在目标链只存在一个官方实例**，并只公布通过验收的地址。
 
@@ -179,7 +196,8 @@ remainingShare(token) > 0
 - 快照生成器拒绝重复地址。
 - 全领后 `claimedShare == totalShare`、余额为 0；之后再转入的代币永久留存。
 - 领取成功后 `claimedAmount(token, account)` 等于返回值、事件 `amount` 与账户余额增量；重复领取与失败回滚不改变它；不同代币互相隔离。
-- `totalShare < Σleaves` 时尾部地址永久 `ShareExceedsRemaining`；`totalShare > Σleaves` 时残留永久锁定（部署期信任边界回归）。
+- 生成器归一化正确性：raw `[1,1,1]` 归一化后 `Σ == 1e18` 且余数落在最大份额（并列取最小索引）地址；raw `[0.2,0.3,0.4]` 归一化为 `[222222222222222222, 333333333333333333, 444444444444444445]`；`build` 的 `totalShare` 恒为 `1e18`；raw 叶子无法通过归一化后的 root。
+- 生成器拒绝空快照、零份额条目与全零份额（`normalizeShares` 的 `rawTotal == 0` 分支）。
 - 随机份额/余额/领取顺序下 `Σpayout == 初始余额`（fuzz）。
 
 以下仍属部署前人工复核（当前无自动化测试）：
@@ -197,7 +215,7 @@ remainingShare(token) > 0
 | 接口 | 语义 |
 | --- | --- |
 | `sourceChainId()` / `sourceBlockNumber()` / `sourceBurnAddress()` | 来源快照的链 ID、区块号与 Burn 地址，仅用于溯源，不参与领取验证 |
-| `merkleRoot()` / `totalShare()` | 不可变的 Merkle Root 与快照份额总和（`Σleaves`） |
+| `merkleRoot()` / `totalShare()` | 不可变的 Merkle Root 与快照份额总和（`Σleaves`，新快照恒为 `1e18`） |
 | `claimedShare(token)` | 该代币已被成功领取消耗的来源份额累计值 |
 | `claimedAmount(token, account)` | 该地址在该代币上成功领取时实际铸造到的金额；从未领取为 0 |
 | `remainingShare(token)` | `totalShare - claimedShare(token)`，即该代币剩余未领取份额 |
@@ -228,7 +246,7 @@ event AirdropClaimed(
 | `InvalidSourceChainId()` | 构造器 `sourceChainId == 0` |
 | `InvalidSourceBlock()` | 构造器 `sourceBlockNumber == 0` |
 | `InvalidMerkleRoot()` | 构造器 `merkleRoot == bytes32(0)` |
-| `InvalidTotalShare()` | 构造器 `totalShare == 0` 或 `> 1e18` |
+| `InvalidTotalShare()` | 构造器 `totalShare == 0` 或 `> 1e18`（历史部署约束；新快照恒传 `1e18`） |
 | `InvalidToken()` | 代币地址为零或没有合约代码 |
 | `InvalidAccount()` | 账户为零地址（在调用者校验之前） |
 | `InvalidShare()` | 份额为零 |

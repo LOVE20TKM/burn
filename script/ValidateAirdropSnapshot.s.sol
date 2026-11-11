@@ -29,6 +29,7 @@ contract ValidateAirdropSnapshot is Script {
         require(vm.parseJsonUint(json, ".sourceBlockNumber") == sourceBlockNumber, "snapshot source block mismatch");
         require(vm.parseJsonAddress(json, ".sourceBurnAddress") == sourceBurnAddress, "snapshot source Burn mismatch");
         require(vm.parseJsonBytes32(json, ".merkleRoot") == expectedRoot, "snapshot root mismatch");
+        require(expectedTotalShare == WAD, "snapshot total share must be 1e18");
         require(vm.parseJsonUint(json, ".totalShare") == expectedTotalShare, "snapshot total share mismatch");
 
         uint256 declaredCount = vm.parseJsonUint(json, ".accountCount");
@@ -53,7 +54,7 @@ contract ValidateAirdropSnapshot is Script {
             entries[i] = entry;
             leaves[i] = entry.leaf;
         }
-        require(totalShare == expectedTotalShare && totalShare <= WAD, "snapshot share sum mismatch");
+        require(totalShare == WAD, "snapshot share sum must be 1e18");
 
         bytes32 root = _root(leaves);
         require(root == expectedRoot, "snapshot entries produce a different root");

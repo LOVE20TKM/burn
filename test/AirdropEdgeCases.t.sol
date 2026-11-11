@@ -6,6 +6,7 @@ import {Airdrop} from "../src/Airdrop.sol";
 import {IAirdrop} from "../src/interface/IAirdrop.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {MockERC20} from "./mocks/MockProtocol.sol";
+import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {GenerateAirdropSnapshot} from "../script/GenerateAirdropSnapshot.s.sol";
 
 /// @notice Regression tests for the review findings that the original
@@ -47,6 +48,106 @@ contract AirdropEdgeCasesTest is Test {
         builder.build(accounts, shares);
     }
 
+    function test_GeneratorNormalizesSharesToExactlyOneWad() public view {
+        // Raw [1, 1, 1] flooring: 3 * (1e18 / 3) == 3 * 333333333333333333
+        // == 999999999999999999, i.e. 1 wei short. The remainder must land on the
+        // largest share; with a three-way tie the lowest index wins.
+        uint256[] memory shares = new uint256[](3);
+        shares[0] = 1;
+        shares[1] = 1;
+        shares[2] = 1;
+
+        uint256[] memory normalized = builder.normalizeShares(shares);
+        assertEq(normalized[0], 333333333333333334);
+        assertEq(normalized[1], 333333333333333333);
+        assertEq(normalized[2], 333333333333333333);
+        assertEq(normalized[0] + normalized[1] + normalized[2], 1 ether);
+    }
+
+    function test_GeneratorPutsRemainderOnLargestShare() public view {
+        // 0.2 / 0.3 / 0.4 ether floor to 999999999999999999 wei; carol holds the
+        // largest share, so she absorbs the leftover 1 wei.
+        uint256[] memory shares = new uint256[](3);
+        shares[0] = 0.2 ether;
+        shares[1] = 0.3 ether;
+        shares[2] = 0.4 ether;
+
+        uint256[] memory normalized = builder.normalizeShares(shares);
+        assertEq(normalized[0], 222222222222222222);
+        assertEq(normalized[1], 333333333333333333);
+        assertEq(normalized[2], 444444444444444445);
+        assertEq(normalized[0] + normalized[1] + normalized[2], 1 ether);
+    }
+
+    function test_GeneratorNormalizedSumIsAlwaysExactlyOneWad() public view {
+        address[] memory accounts = new address[](3);
+        uint256[] memory shares = new uint256[](3);
+        accounts[0] = alice;
+        accounts[1] = bob;
+        accounts[2] = carol;
+        shares[0] = 0.2 ether;
+        shares[1] = 0.3 ether;
+        shares[2] = 0.4 ether;
+
+        (bytes32 root, uint256 totalShare, bytes32[][] memory proofs) = builder.build(accounts, shares);
+        assertEq(totalShare, 1 ether);
+
+        // `build` hashes the normalised shares, so the returned proofs only verify
+        // against the 1e18-scaled leaves: an internal-consistency check that the
+        // pre-normalisation 0.9e18 leaves are gone.
+        uint256[] memory normalized = builder.normalizeShares(shares);
+        bytes32[] memory leaves = new bytes32[](3);
+        uint256 leafSum;
+        for (uint256 i; i < 3; ++i) {
+            leaves[i] = keccak256(bytes.concat(keccak256(abi.encode(accounts[i], normalized[i]))));
+            leafSum += normalized[i];
+            assertTrue(MerkleProof.verify(proofs[i], root, leaves[i]));
+        }
+        assertEq(leafSum, 1 ether);
+
+        // The raw leaves are rejected against the same root.
+        bytes32 rawLeaf = keccak256(bytes.concat(keccak256(abi.encode(alice, shares[0]))));
+        assertFalse(MerkleProof.verify(proofs[0], root, rawLeaf));
+    }
+
+    function test_GeneratorRejectsZeroShareEntry() public {
+        address[] memory accounts = new address[](2);
+        uint256[] memory shares = new uint256[](2);
+        accounts[0] = alice;
+        accounts[1] = bob;
+        shares[0] = 1;
+        shares[1] = 0;
+
+        vm.expectRevert(bytes("invalid snapshot entry"));
+        builder.build(accounts, shares);
+    }
+
+    function test_GeneratorRejectsShareThatNormalisesToZero() public {
+        // `build` is public and takes raw shares, so it also has to survive a distribution
+        // whose total is far above the 1e18 scale the consumer expects. A share that floors
+        // to zero would become a leaf that occupies a proof and a claim slot yet can never
+        // pay out, so the generator refuses to emit the snapshot instead of shipping it.
+        address[] memory accounts = new address[](2);
+        uint256[] memory shares = new uint256[](2);
+        accounts[0] = alice;
+        accounts[1] = bob;
+        shares[0] = 1;
+        shares[1] = 1e30;
+
+        vm.expectRevert(bytes("normalized share rounded to zero"));
+        builder.build(accounts, shares);
+    }
+
+    function test_NormalizeSharesRejectsEmptyAndZeroTotals() public {
+        uint256[] memory empty = new uint256[](0);
+        vm.expectRevert(bytes("invalid snapshot entries"));
+        builder.normalizeShares(empty);
+
+        uint256[] memory zeros = new uint256[](2);
+        vm.expectRevert(bytes("no positive snapshot share"));
+        builder.normalizeShares(zeros);
+    }
+
     // ------------------------------------------------------------------
     // Reentrancy
     // ------------------------------------------------------------------
@@ -60,18 +161,19 @@ contract AirdropEdgeCasesTest is Test {
         accounts[1] = bob;
         shares[0] = 0.2 ether;
         shares[1] = 0.3 ether;
+        uint256[] memory normalized = builder.normalizeShares(shares);
         (bytes32 root,, bytes32[][] memory proofs) = builder.build(accounts, shares);
 
-        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 0.5 ether);
+        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 1 ether);
         reentering.mint(address(airdrop), 500 ether);
-        reentering.configure(address(airdrop), alice, 0.3 ether, proofs[1]);
+        reentering.configure(address(airdrop), alice, normalized[1], proofs[1]);
 
         vm.prank(alice);
         vm.expectRevert(bytes("ReentrancyGuard: reentrant call"));
-        airdrop.claim(address(reentering), alice, 0.2 ether, proofs[0]);
+        airdrop.claim(address(reentering), alice, normalized[0], proofs[0]);
 
         assertFalse(airdrop.isClaimed(address(reentering), alice));
-        assertEq(airdrop.remainingShare(address(reentering)), 0.5 ether);
+        assertEq(airdrop.remainingShare(address(reentering)), 1 ether);
         assertEq(reentering.balanceOf(alice), 0);
     }
 
@@ -86,17 +188,18 @@ contract AirdropEdgeCasesTest is Test {
         uint256[] memory shares = new uint256[](1);
         accounts[0] = alice;
         shares[0] = 0.5 ether;
+        uint256[] memory normalized = builder.normalizeShares(shares);
         (bytes32 root,, bytes32[][] memory proofs) = builder.build(accounts, shares);
 
-        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 0.5 ether);
+        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 1 ether);
         falseToken.setBalance(address(airdrop), 100 ether);
 
         vm.prank(alice);
         vm.expectRevert(bytes("SafeERC20: ERC20 operation did not succeed"));
-        airdrop.claim(address(falseToken), alice, 0.5 ether, proofs[0]);
+        airdrop.claim(address(falseToken), alice, normalized[0], proofs[0]);
 
         assertFalse(airdrop.isClaimed(address(falseToken), alice));
-        assertEq(airdrop.remainingShare(address(falseToken)), 0.5 ether);
+        assertEq(airdrop.remainingShare(address(falseToken)), 1 ether);
         assertEq(airdrop.claimedAmount(address(falseToken), alice), 0);
     }
 
@@ -107,13 +210,14 @@ contract AirdropEdgeCasesTest is Test {
         uint256[] memory shares = new uint256[](1);
         accounts[0] = alice;
         shares[0] = 0.5 ether;
+        uint256[] memory normalized = builder.normalizeShares(shares);
         (bytes32 root,, bytes32[][] memory proofs) = builder.build(accounts, shares);
 
-        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 0.5 ether);
+        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 1 ether);
         emptyToken.setBalance(address(airdrop), 100 ether);
 
         vm.prank(alice);
-        assertEq(airdrop.claim(address(emptyToken), alice, 0.5 ether, proofs[0]), 100 ether);
+        assertEq(airdrop.claim(address(emptyToken), alice, normalized[0], proofs[0]), 100 ether);
         assertEq(emptyToken.balanceOf(alice), 100 ether);
         assertEq(emptyToken.balanceOf(address(airdrop)), 0);
     }
@@ -127,13 +231,14 @@ contract AirdropEdgeCasesTest is Test {
         uint256[] memory shares = new uint256[](1);
         accounts[0] = alice;
         shares[0] = 0.5 ether;
+        uint256[] memory normalized = builder.normalizeShares(shares);
         (bytes32 root,, bytes32[][] memory proofs) = builder.build(accounts, shares);
 
-        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 0.5 ether);
+        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 1 ether);
         token.mint(address(airdrop), 100 ether);
 
         vm.prank(alice);
-        assertEq(airdrop.claim(address(token), alice, 0.5 ether, proofs[0]), 100 ether);
+        assertEq(airdrop.claim(address(token), alice, normalized[0], proofs[0]), 100 ether);
         assertEq(token.balanceOf(address(airdrop)), 0);
     }
 
@@ -150,6 +255,7 @@ contract AirdropEdgeCasesTest is Test {
         shares[2] = 0.3 ether;
         shares[3] = 0.15 ether;
         shares[4] = 0.25 ether;
+        uint256[] memory normalized = builder.normalizeShares(shares);
         (bytes32 root, uint256 totalShare, bytes32[][] memory proofs) = builder.build(accounts, shares);
 
         Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, totalShare);
@@ -157,7 +263,7 @@ contract AirdropEdgeCasesTest is Test {
 
         for (uint256 i; i < accounts.length; ++i) {
             vm.prank(accounts[i]);
-            airdrop.claim(address(token), accounts[i], shares[i], proofs[i]);
+            airdrop.claim(address(token), accounts[i], normalized[i], proofs[i]);
         }
 
         assertEq(airdrop.claimedShare(address(token)), totalShare);
@@ -185,15 +291,20 @@ contract AirdropEdgeCasesTest is Test {
             shares[i] = values[i];
         }
 
+        uint256[] memory normalized = builder.normalizeShares(shares);
         (bytes32 root, uint256 totalShare, bytes32[][] memory proofs) = builder.build(accounts, shares);
+        // Raw shares already sum to 1e18 here, so normalisation is a no-op.
         assertEq(totalShare, 1 ether);
+        for (uint256 i; i < 9; ++i) {
+            assertEq(normalized[i], shares[i]);
+        }
 
         Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, totalShare);
         token.mint(address(airdrop), 1_000 ether);
 
         for (uint256 i; i < accounts.length; ++i) {
             vm.prank(accounts[i]);
-            airdrop.claim(address(token), accounts[i], shares[i], proofs[i]);
+            airdrop.claim(address(token), accounts[i], normalized[i], proofs[i]);
         }
 
         assertEq(airdrop.claimedShare(address(token)), totalShare);
@@ -216,6 +327,7 @@ contract AirdropEdgeCasesTest is Test {
             shares[i] = 1 + (uint256(keccak256(abi.encode(seed, i))) % (cap - 1));
         }
 
+        uint256[] memory normalized = builder.normalizeShares(shares);
         (bytes32 root, uint256 totalShare, bytes32[][] memory proofs) = builder.build(accounts, shares);
         Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, totalShare);
 
@@ -235,7 +347,7 @@ contract AirdropEdgeCasesTest is Test {
         for (uint256 k; k < n; ++k) {
             uint256 i = order[k];
             vm.prank(accounts[i]);
-            paid += airdrop.claim(address(token), accounts[i], shares[i], proofs[i]);
+            paid += airdrop.claim(address(token), accounts[i], normalized[i], proofs[i]);
         }
 
         assertEq(paid, balance);
@@ -250,20 +362,21 @@ contract AirdropEdgeCasesTest is Test {
         accounts[1] = bob;
         shares[0] = 0.2 ether;
         shares[1] = 0.3 ether;
+        uint256[] memory normalized = builder.normalizeShares(shares);
         (bytes32 root,, bytes32[][] memory proofs) = builder.build(accounts, shares);
 
-        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 0.5 ether);
+        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 1 ether);
         token.mint(address(airdrop), 1);
 
-        // floor(1 * 0.2e18 / 0.5e18) == 0: eligible, but not claimable yet.
+        // floor(1 * 0.4e18 / 1e18) == 0: eligible, but not claimable yet.
         vm.prank(alice);
         vm.expectRevert(IAirdrop.NoClaimableAmount.selector);
-        airdrop.claim(address(token), alice, 0.2 ether, proofs[0]);
+        airdrop.claim(address(token), alice, normalized[0], proofs[0]);
         assertFalse(airdrop.isClaimed(address(token), alice));
 
         token.mint(address(airdrop), 4);
         vm.prank(alice);
-        assertEq(airdrop.claim(address(token), alice, 0.2 ether, proofs[0]), 2);
+        assertEq(airdrop.claim(address(token), alice, normalized[0], proofs[0]), 2);
     }
 
     function test_FullyClaimedPoolKeepsLaterTransfersStuck() public {
@@ -271,18 +384,19 @@ contract AirdropEdgeCasesTest is Test {
         uint256[] memory shares = new uint256[](1);
         accounts[0] = alice;
         shares[0] = 0.5 ether;
+        uint256[] memory normalized = builder.normalizeShares(shares);
         (bytes32 root,, bytes32[][] memory proofs) = builder.build(accounts, shares);
 
-        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 0.5 ether);
+        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 1 ether);
         token.mint(address(airdrop), 100 ether);
         vm.prank(alice);
-        airdrop.claim(address(token), alice, 0.5 ether, proofs[0]);
+        airdrop.claim(address(token), alice, normalized[0], proofs[0]);
 
         token.mint(address(airdrop), 7 ether);
         vm.prank(alice);
         vm.expectRevert(IAirdrop.AirdropAlreadyClaimed.selector);
-        airdrop.claim(address(token), alice, 0.5 ether, proofs[0]);
-        assertEq(airdrop.claimableAmount(address(token), alice, 0.5 ether, proofs[0]), 0);
+        airdrop.claim(address(token), alice, normalized[0], proofs[0]);
+        assertEq(airdrop.claimableAmount(address(token), alice, normalized[0], proofs[0]), 0);
         assertEq(token.balanceOf(address(airdrop)), 7 ether);
     }
 
@@ -291,15 +405,10 @@ contract AirdropEdgeCasesTest is Test {
     // ------------------------------------------------------------------
 
     function test_MisconfiguredLowerTotalShareBlocksTailClaimer() public {
-        address[] memory accounts = new address[](3);
-        uint256[] memory shares = new uint256[](3);
-        accounts[0] = alice;
-        accounts[1] = bob;
-        accounts[2] = carol;
-        shares[0] = 0.2 ether;
-        shares[1] = 0.3 ether;
-        shares[2] = 0.4 ether;
-        (bytes32 root,, bytes32[][] memory proofs) = builder.build(accounts, shares);
+        // The generator now normalises to exactly 1e18, so a snapshot whose leaf
+        // sum differs from `totalShare` can only be produced by a hand-rolled
+        // deployment. This regression pins the consequence of that misconfiguration.
+        (bytes32 root, bytes32[][] memory proofs) = _legacyRawTree();
 
         // totalShare (0.8e18) is intentionally smaller than the leaf sum (0.9e18).
         Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 0.8 ether);
@@ -322,15 +431,7 @@ contract AirdropEdgeCasesTest is Test {
     }
 
     function test_MisconfiguredHigherTotalShareLocksResidue() public {
-        address[] memory accounts = new address[](3);
-        uint256[] memory shares = new uint256[](3);
-        accounts[0] = alice;
-        accounts[1] = bob;
-        accounts[2] = carol;
-        shares[0] = 0.2 ether;
-        shares[1] = 0.3 ether;
-        shares[2] = 0.4 ether;
-        (bytes32 root,, bytes32[][] memory proofs) = builder.build(accounts, shares);
+        (bytes32 root, bytes32[][] memory proofs) = _legacyRawTree();
 
         // totalShare (1e18) is intentionally larger than the leaf sum (0.9e18).
         Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 1 ether);
@@ -358,19 +459,49 @@ contract AirdropEdgeCasesTest is Test {
         uint256[] memory shares = new uint256[](1);
         accounts[0] = alice;
         shares[0] = 0.5 ether;
+        uint256[] memory normalized = builder.normalizeShares(shares);
         (bytes32 root,,) = builder.build(accounts, shares);
 
-        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 0.5 ether);
+        Airdrop airdrop = new Airdrop(SOURCE_CHAIN_ID, SOURCE_BLOCK_NUMBER, SOURCE_BURN, root, 1 ether);
         token.mint(address(airdrop), 100 ether);
 
         // An empty/invalid proof would be InvalidProof if the proof were checked
         // first; the unauthorized caller is rejected regardless of proof quality.
         vm.prank(relayer);
         vm.expectRevert(IAirdrop.UnauthorizedClaimer.selector);
-        airdrop.claim(address(token), alice, 0.5 ether, new bytes32[](0));
+        airdrop.claim(address(token), alice, normalized[0], new bytes32[](0));
 
         assertFalse(airdrop.isClaimed(address(token), alice));
-        assertEq(airdrop.remainingShare(address(token)), 0.5 ether);
+        assertEq(airdrop.remainingShare(address(token)), 1 ether);
+    }
+
+    /// @dev Three-leaf tree over the raw (0.2, 0.3, 0.4 ether) shares, i.e. a leaf
+    ///      sum of 0.9e18 that no longer matches the normalised 1e18 totalShare.
+    ///      Only the pre-normalisation deployment could produce such a snapshot.
+    function _legacyRawTree() internal view returns (bytes32 root, bytes32[][] memory proofs) {
+        bytes32 leaf0 = _leaf(alice, 0.2 ether);
+        bytes32 leaf1 = _leaf(bob, 0.3 ether);
+        bytes32 leaf2 = _leaf(carol, 0.4 ether);
+        bytes32 pair01 = _hashPair(leaf0, leaf1);
+        root = _hashPair(pair01, leaf2);
+
+        proofs = new bytes32[][](3);
+        proofs[0] = new bytes32[](2);
+        proofs[0][0] = leaf1;
+        proofs[0][1] = leaf2;
+        proofs[1] = new bytes32[](2);
+        proofs[1][0] = leaf0;
+        proofs[1][1] = leaf2;
+        proofs[2] = new bytes32[](1);
+        proofs[2][0] = pair01;
+    }
+
+    function _leaf(address account, uint256 share) internal pure returns (bytes32) {
+        return keccak256(bytes.concat(keccak256(abi.encode(account, share))));
+    }
+
+    function _hashPair(bytes32 a, bytes32 b) internal pure returns (bytes32) {
+        return a < b ? keccak256(bytes.concat(a, b)) : keccak256(bytes.concat(b, a));
     }
 }
 
