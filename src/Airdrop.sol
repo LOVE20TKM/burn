@@ -23,6 +23,8 @@ contract Airdrop is IAirdrop, ReentrancyGuard {
     mapping(address => uint256) public override claimedShare;
     // token => source account => whether this token was successfully claimed
     mapping(address => mapping(address => bool)) private _claimed;
+    // token => source account => amount actually minted by a successful claim
+    mapping(address => mapping(address => uint256)) public override claimedAmount;
 
     constructor(
         uint256 sourceChainId_,
@@ -81,15 +83,12 @@ contract Airdrop is IAirdrop, ReentrancyGuard {
         if (amount == 0) revert NoClaimableAmount();
 
         _claimed[token][account] = true;
+        claimedAmount[token][account] = amount;
         claimedShare[token] += share;
         IERC20(token).safeTransfer(account, amount);
 
         emit AirdropClaimed({
-            token: token,
-            account: account,
-            share: share,
-            amount: amount,
-            remainingShare: remaining - share
+            token: token, account: account, share: share, amount: amount, remainingShare: remaining - share
         });
     }
 

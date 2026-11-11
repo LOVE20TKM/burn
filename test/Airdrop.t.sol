@@ -2,6 +2,7 @@
 pragma solidity =0.8.17;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {Airdrop} from "../src/Airdrop.sol";
 import {IAirdrop} from "../src/interface/IAirdrop.sol";
 import {MockERC20, MockFailingAirdropToken} from "./mocks/MockProtocol.sol";
@@ -186,6 +187,85 @@ contract AirdropTest is Test {
 
         assertFalse(airdrop.isClaimed(address(failingToken), alice));
         assertEq(airdrop.remainingShare(address(failingToken)), TOTAL_SHARE);
+        assertEq(airdrop.claimedAmount(address(failingToken), alice), 0);
+    }
+
+    function test_ClaimedAmountMatchesReturnValueEventAndBalanceDelta() public {
+        tokenA.mint(address(airdrop), 900 ether);
+        uint256 balanceBefore = tokenA.balanceOf(alice);
+
+        vm.recordLogs();
+        vm.prank(alice);
+        uint256 amount = airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof());
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        bytes32 claimedSig = keccak256("AirdropClaimed(address,address,uint256,uint256,uint256)");
+        uint256 eventAmount;
+        bool found;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] != claimedSig) continue;
+            assertEq(logs[i].topics[1], bytes32(uint256(uint160(address(tokenA)))));
+            assertEq(logs[i].topics[2], bytes32(uint256(uint160(alice))));
+            (, eventAmount,) = abi.decode(logs[i].data, (uint256, uint256, uint256));
+            found = true;
+        }
+        assertTrue(found, "AirdropClaimed not emitted");
+
+        assertEq(amount, 200 ether);
+        assertEq(airdrop.claimedAmount(address(tokenA), alice), amount);
+        assertEq(eventAmount, amount);
+        assertEq(tokenA.balanceOf(alice) - balanceBefore, amount);
+    }
+
+    function test_SecondClaimRevertsAndKeepsClaimedAmount() public {
+        tokenA.mint(address(airdrop), 900 ether);
+
+        vm.prank(alice);
+        uint256 amount = airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof());
+        assertEq(airdrop.claimedAmount(address(tokenA), alice), amount);
+
+        vm.prank(alice);
+        vm.expectRevert(IAirdrop.AirdropAlreadyClaimed.selector);
+        airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof());
+        assertEq(airdrop.claimedAmount(address(tokenA), alice), amount);
+    }
+
+    function test_ClaimedAmountIsZeroForAccountThatNeverClaimed() public {
+        tokenA.mint(address(airdrop), 900 ether);
+
+        assertEq(airdrop.claimedAmount(address(tokenA), alice), 0);
+        assertEq(airdrop.claimedAmount(address(tokenA), bob), 0);
+
+        vm.prank(alice);
+        airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof());
+        assertEq(airdrop.claimedAmount(address(tokenA), alice), 200 ether);
+        assertEq(airdrop.claimedAmount(address(tokenA), bob), 0);
+    }
+
+    function test_ClaimedAmountIsIsolatedPerToken() public {
+        tokenA.mint(address(airdrop), 90 ether);
+        tokenB.mint(address(airdrop), 180 ether);
+
+        vm.prank(alice);
+        uint256 amountA = airdrop.claim(address(tokenA), alice, ALICE_SHARE, _aliceProof());
+        assertEq(amountA, 20 ether);
+        assertEq(airdrop.claimedAmount(address(tokenA), alice), amountA);
+        assertEq(airdrop.claimedAmount(address(tokenB), alice), 0);
+
+        vm.prank(alice);
+        uint256 amountB = airdrop.claim(address(tokenB), alice, ALICE_SHARE, _aliceProof());
+        assertEq(amountB, 40 ether);
+        assertEq(airdrop.claimedAmount(address(tokenA), alice), amountA);
+        assertEq(airdrop.claimedAmount(address(tokenB), alice), amountB);
+    }
+
+    function test_RevertedClaimLeavesClaimedAmountZero() public {
+        tokenA.mint(address(airdrop), 900 ether);
+
+        vm.prank(alice);
+        vm.expectRevert(IAirdrop.InvalidProof.selector);
+        airdrop.claim(address(tokenA), alice, ALICE_SHARE + 1, _aliceProof());
+        assertEq(airdrop.claimedAmount(address(tokenA), alice), 0);
     }
 
     function test_SnapshotBuilderProofsClaimAgainstTheContract() public {

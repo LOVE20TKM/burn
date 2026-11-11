@@ -27,6 +27,7 @@ interface IAirdrop {
     function totalShare() external view returns (uint256);
 
     function claimedShare(address token) external view returns (uint256);
+    function claimedAmount(address token, address account) external view returns (uint256);
     function remainingShare(address token) external view returns (uint256);
     function isClaimed(address token, address account) external view returns (bool);
 

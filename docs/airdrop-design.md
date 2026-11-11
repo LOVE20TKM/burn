@@ -132,7 +132,7 @@ claimAmount = token.balanceOf(airdrop) × accountShare ÷ remainingShare(token)
 
 校验顺序以实现为准：账户非零 → 调用者是账户本人 → 代币地址有代码 → 份额非零 → 未领取 → 份额不超过剩余 → Merkle proof → 金额大于零。第三方调用者总会在 proof 校验之前得到 `UnauthorizedClaimer`，不会因 proof 质量得到不同错误。
 
-状态在 ERC20 转账前更新，并使用重入保护；转账失败时整笔交易回滚。每种代币分别保存已领取地址和累计已领取份额，领取一种代币不影响其他代币。
+状态在 ERC20 转账前更新，并使用重入保护；转账失败时整笔交易回滚。每种代币分别保存已领取地址、累计已领取份额和每个账户的实际领取金额，领取一种代币不影响其他代币。
 
 `claimableAmount(token, account, share, proof)` 是只读的"当前可领取量"，不校验调用者，且返回 `0` 有七类不同成因：
 
@@ -144,7 +144,7 @@ claimAmount = token.balanceOf(airdrop) × accountShare ÷ remainingShare(token)
 - Merkle proof 无效；
 - 资格有效但 `floor` 后的金额为零（等待充值或更小份额地址先领取）。
 
-前端不能用 `0` 判断"无资格"，应结合 `isClaimed`、`remainingShare` 与转账前后余额差展示；对 `balanceOf` 会 revert 的代币，整个 view 也会 revert，需要 try/catch。
+前端不能用 `0` 判断"无资格"，应结合 `isClaimed`、`remainingShare` 与转账前后余额差展示；已领取账户的实际金额可直接读 `claimedAmount(token, account)`，无需依赖事件历史；对 `balanceOf` 会 revert 的代币，整个 view 也会 revert，需要 try/catch。
 
 ## 5. 充值与永久边界
 
@@ -178,6 +178,7 @@ remainingShare(token) > 0
 - 单叶树（空 proof）、5 叶与 9 叶奇数树全部可领且末位领取者清零余额。
 - 快照生成器拒绝重复地址。
 - 全领后 `claimedShare == totalShare`、余额为 0；之后再转入的代币永久留存。
+- 领取成功后 `claimedAmount(token, account)` 等于返回值、事件 `amount` 与账户余额增量；重复领取与失败回滚不改变它；不同代币互相隔离。
 - `totalShare < Σleaves` 时尾部地址永久 `ShareExceedsRemaining`；`totalShare > Σleaves` 时残留永久锁定（部署期信任边界回归）。
 - 随机份额/余额/领取顺序下 `Σpayout == 初始余额`（fuzz）。
 
@@ -198,6 +199,7 @@ remainingShare(token) > 0
 | `sourceChainId()` / `sourceBlockNumber()` / `sourceBurnAddress()` | 来源快照的链 ID、区块号与 Burn 地址，仅用于溯源，不参与领取验证 |
 | `merkleRoot()` / `totalShare()` | 不可变的 Merkle Root 与快照份额总和（`Σleaves`） |
 | `claimedShare(token)` | 该代币已被成功领取消耗的来源份额累计值 |
+| `claimedAmount(token, account)` | 该地址在该代币上成功领取时实际铸造到的金额；从未领取为 0 |
 | `remainingShare(token)` | `totalShare - claimedShare(token)`，即该代币剩余未领取份额 |
 | `isClaimed(token, account)` | 该地址是否已成功领取过该代币 |
 | `leafHash(account, share)` | 快照叶子编码，必须与生成器/验证器保持一致 |

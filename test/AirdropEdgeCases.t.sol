@@ -97,6 +97,7 @@ contract AirdropEdgeCasesTest is Test {
 
         assertFalse(airdrop.isClaimed(address(falseToken), alice));
         assertEq(airdrop.remainingShare(address(falseToken)), 0.5 ether);
+        assertEq(airdrop.claimedAmount(address(falseToken), alice), 0);
     }
 
     function test_EmptyReturnTokenIsAccepted() public {
